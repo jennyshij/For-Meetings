@@ -8,7 +8,7 @@ from typing import Any
 import requests
 
 from classifier import classify_research_direction, match_keywords
-from config import OPENALEX_MAILTO, OPENALEX_PER_QUERY, OPENALEX_SOURCE_IDS
+from config import CONFERENCE_EVIDENCE_TERMS, OPENALEX_MAILTO, OPENALEX_PER_QUERY, OPENALEX_SOURCE_IDS
 
 
 OPENALEX_WORKS_URL = "https://api.openalex.org/works"
@@ -58,6 +58,44 @@ def _institution_for_author(authorship: dict[str, Any]) -> str:
     return "; ".join(dict.fromkeys(institution_names))
 
 
+def _conference_metadata_text(work: dict[str, Any]) -> str:
+    """Collect venue/source fields that can identify a conference."""
+    values: list[str] = []
+
+    for key in ["id", "doi"]:
+        if work.get(key):
+            values.append(str(work[key]))
+
+    for location_key in ["primary_location", "best_oa_location"]:
+        location = work.get(location_key) or {}
+        source = location.get("source") or {}
+        for field in ["display_name", "landing_page_url", "pdf_url"]:
+            if source.get(field):
+                values.append(str(source[field]))
+            if location.get(field):
+                values.append(str(location[field]))
+
+    for location in work.get("locations") or []:
+        source = location.get("source") or {}
+        for field in ["display_name", "landing_page_url", "pdf_url"]:
+            if source.get(field):
+                values.append(str(source[field]))
+            if location.get(field):
+                values.append(str(location[field]))
+
+    return " ".join(values).lower()
+
+
+def _has_conference_evidence(work: dict[str, Any], conference: str) -> bool:
+    """Check whether OpenAlex metadata visibly points to the target venue."""
+    evidence_terms = CONFERENCE_EVIDENCE_TERMS.get(conference, [])
+    if not evidence_terms:
+        return True
+
+    metadata_text = _conference_metadata_text(work)
+    return any(term.lower() in metadata_text for term in evidence_terms)
+
+
 def _query_openalex(
     session: requests.Session,
     conference: str,
@@ -92,6 +130,7 @@ def _query_openalex(
                 "authorships",
                 "primary_location",
                 "best_oa_location",
+                "locations",
             ]
         ),
     }
@@ -128,7 +167,14 @@ def fetch_openalex_papers(
                         )
                         continue
 
+                    source_ids = OPENALEX_SOURCE_IDS.get(conference, [])
                     for work in works:
+                        # When we cannot use an OpenAlex source filter, require
+                        # visible conference evidence in metadata before
+                        # assigning the requested conference label.
+                        if not source_ids and not _has_conference_evidence(work, conference):
+                            continue
+
                         paper_id = work.get("id") or work.get("doi") or work.get("display_name")
                         if not paper_id:
                             continue

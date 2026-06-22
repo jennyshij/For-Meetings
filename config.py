@@ -120,6 +120,22 @@ OPENALEX_SOURCE_IDS = {
 }
 
 
+# Metadata terms used when OpenAlex has no stable source ID for a conference.
+# These are checked against source names, DOI, OpenAlex URLs, and landing pages.
+CONFERENCE_EVIDENCE_TERMS = {
+    "CoRL": ["corl", "conference on robot learning"],
+    "RSS": ["rss.", "robotics: science and systems", "robotics science and systems"],
+    "ICRA": ["icra", "international conference on robotics and automation"],
+    "IROS": ["iros", "intelligent robots and systems"],
+    "NeurIPS": ["neurips", "nips.cc", "neural information processing systems"],
+    "ICML": ["icml", "international conference on machine learning"],
+    "ICLR": ["iclr", "learning representations"],
+    "CVPR": ["cvpr", "computer vision and pattern recognition"],
+    "ICCV": ["iccv", "international conference on computer vision"],
+    "ECCV": ["eccv", "european conference on computer vision"],
+}
+
+
 # OpenAlex asks automated clients to include an email when possible.
 # Set OPENALEX_MAILTO in the environment to enable the polite pool.
 OPENALEX_MAILTO = os.getenv("OPENALEX_MAILTO", "").strip()
