@@ -128,8 +128,16 @@ def fetch_openalex_papers(
                         abstract = _restore_abstract(work.get("abstract_inverted_index"))
                         matched = match_keywords(title, abstract)
 
-                        # Keep only papers that actually match one of the target
-                        # keywords in title/abstract after retrieval.
+                        # OpenAlex often lacks abstracts for conference papers.
+                        # If a work was returned for a keyword query but has no
+                        # abstract to inspect, keep the query keyword as a
+                        # conservative Phase 1 fallback.
+                        if not matched and not abstract:
+                            matched = [keyword]
+
+                        # Keep only papers that match one of the target
+                        # keywords in title/abstract, or via the missing-abstract
+                        # fallback above.
                         if not matched:
                             continue
 
