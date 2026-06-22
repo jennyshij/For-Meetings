@@ -86,6 +86,40 @@ RESEARCH_DIRECTIONS = {
 }
 
 
+# Known OpenAlex source IDs for conference proceedings/venues. OpenAlex coverage
+# is incomplete and sometimes split by year, so fetch_openalex.py falls back to
+# plain search when a conference has no configured source IDs here.
+OPENALEX_SOURCE_IDS = {
+    "CoRL": [
+        "https://openalex.org/S4306506823",  # Conference on Robot Learning
+        "https://openalex.org/S4306499611",  # 5th Annual Conference on Robot Learning
+    ],
+    "RSS": [
+        "https://openalex.org/S4306420803",  # Robotics: Science and Systems
+    ],
+    "NeurIPS": [
+        "https://openalex.org/S4306420609",  # Neural Information Processing Systems
+        "https://openalex.org/S4363606243",
+        "https://openalex.org/S4393916742",
+    ],
+    "ICML": [
+        "https://openalex.org/S4306419644",  # International Conference on Machine Learning
+    ],
+    "ICLR": [
+        "https://openalex.org/S4306419637",  # International Conference on Learning Representations
+    ],
+    "CVPR": [
+        "https://openalex.org/S4306417987",  # Computer Vision and Pattern Recognition
+    ],
+    "ICCV": [
+        "https://openalex.org/S4306419272",  # International Conference on Computer Vision
+    ],
+    "ECCV": [
+        "https://openalex.org/S4306418318",  # European Conference on Computer Vision
+    ],
+}
+
+
 # OpenAlex asks automated clients to include an email when possible.
 # Set OPENALEX_MAILTO in the environment to enable the polite pool.
 OPENALEX_MAILTO = os.getenv("OPENALEX_MAILTO", "").strip()

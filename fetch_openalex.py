@@ -8,7 +8,7 @@ from typing import Any
 import requests
 
 from classifier import classify_research_direction, match_keywords
-from config import OPENALEX_MAILTO, OPENALEX_PER_QUERY
+from config import OPENALEX_MAILTO, OPENALEX_PER_QUERY, OPENALEX_SOURCE_IDS
 
 
 OPENALEX_WORKS_URL = "https://api.openalex.org/works"
@@ -66,12 +66,21 @@ def _query_openalex(
     per_query: int,
 ) -> list[dict[str, Any]]:
     """Search OpenAlex for one conference/year/keyword combination."""
+    source_ids = OPENALEX_SOURCE_IDS.get(conference, [])
+    filters = [
+        f"from_publication_date:{year}-01-01",
+        f"to_publication_date:{year}-12-31",
+    ]
+    if source_ids:
+        filters.append("locations.source.id:" + "|".join(source_ids))
+
     params: dict[str, Any] = {
         # OpenAlex search covers title, abstract, and full text where available.
-        # Including the conference name keeps Phase 1 simple without needing
-        # conference-specific parsers.
-        "search": f"{conference} {keyword}",
-        "filter": f"from_publication_date:{year}-01-01,to_publication_date:{year}-12-31",
+        # When source IDs are configured, they constrain results to the target
+        # conference venue. Otherwise, include the conference name in search as
+        # a simple Phase 1 fallback.
+        "search": keyword if source_ids else f"{conference} {keyword}",
+        "filter": ",".join(filters),
         "per-page": per_query,
         "select": ",".join(
             [
