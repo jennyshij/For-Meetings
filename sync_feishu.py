@@ -22,6 +22,9 @@ FEISHU_RECORDS_URL = (
     "https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
 )
 FEISHU_BATCH_CREATE_URL = FEISHU_RECORDS_URL + "/batch_create"
+FEISHU_FIELDS_URL = (
+    "https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/fields"
+)
 REQUEST_TIMEOUT_SECONDS = 30
 BATCH_SIZE = 20
 DEFAULT_STATUS_FIELD = "状态"
@@ -185,6 +188,49 @@ def fetch_existing_keys(
     return existing_keys
 
 
+def fetch_table_field_names(
+    session: requests.Session,
+    token: str,
+    app_token: str,
+    table_id: str,
+) -> set[str]:
+    """Read Feishu table fields so missing optional columns can be skipped."""
+    url = FEISHU_FIELDS_URL.format(app_token=app_token, table_id=table_id)
+    field_names: set[str] = set()
+    page_token = ""
+
+    while True:
+        params = {"page_size": 100}
+        if page_token:
+            params["page_token"] = page_token
+
+        response = session.get(
+            url,
+            headers=_headers(token),
+            params=params,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        payload = response.json()
+
+        if payload.get("code") != 0:
+            raise RuntimeError(f"Feishu list fields failed: {payload}")
+
+        data = payload.get("data") or {}
+        for item in data.get("items") or []:
+            field_name = item.get("field_name") or item.get("name")
+            if field_name:
+                field_names.add(str(field_name))
+
+        if not data.get("has_more"):
+            break
+        page_token = data.get("page_token", "")
+        if not page_token:
+            break
+
+    return field_names
+
+
 def read_csv_records(csv_path: str) -> list[dict[str, Any]]:
     """Read paper-author rows from CSV and de-duplicate within the file."""
     dataframe = pd.read_csv(csv_path, dtype=str, keep_default_na=False).fillna("")
@@ -213,14 +259,20 @@ def _coerce_bitable_value(csv_column: str, value: Any) -> str:
     return str(value).strip()
 
 
-def build_feishu_record(row: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def build_feishu_record(
+    row: dict[str, Any],
+    allowed_field_names: set[str] | None = None,
+) -> dict[str, dict[str, Any]]:
     """Map one CSV row into Feishu batch_create record format."""
     fields: dict[str, Any] = {}
 
     for csv_column, feishu_field in FIELD_MAPPING.items():
+        if allowed_field_names is not None and feishu_field not in allowed_field_names:
+            continue
         fields[feishu_field] = _coerce_bitable_value(csv_column, row.get(csv_column, ""))
 
-    fields[DEFAULT_STATUS_FIELD] = DEFAULT_STATUS_VALUE
+    if allowed_field_names is None or DEFAULT_STATUS_FIELD in allowed_field_names:
+        fields[DEFAULT_STATUS_FIELD] = DEFAULT_STATUS_VALUE
     return {"fields": fields}
 
 
@@ -280,6 +332,20 @@ def sync_csv_to_feishu(csv_path: str, env_path: str = ".env") -> int:
             app_token=settings["app_token"],
             table_id=settings["table_id"],
         )
+        field_names = fetch_table_field_names(
+            session=session,
+            token=token,
+            app_token=settings["app_token"],
+            table_id=settings["table_id"],
+        )
+
+        requested_field_names = set(FIELD_MAPPING.values()) | {DEFAULT_STATUS_FIELD}
+        missing_field_names = sorted(requested_field_names - field_names)
+        if missing_field_names:
+            print(
+                "[WARN] Feishu table is missing these fields; they will be skipped: "
+                + ", ".join(missing_field_names)
+            )
 
         records_to_create = []
         skipped_count = 0
@@ -287,7 +353,7 @@ def sync_csv_to_feishu(csv_path: str, env_path: str = ".env") -> int:
             if _dedupe_key(row) in existing_keys:
                 skipped_count += 1
                 continue
-            records_to_create.append(build_feishu_record(row))
+            records_to_create.append(build_feishu_record(row, allowed_field_names=field_names))
 
         print(
             f"[INFO] Feishu sync loaded {len(csv_records)} CSV rows, "
