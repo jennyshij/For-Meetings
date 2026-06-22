@@ -1,0 +1,181 @@
+"""Fetch papers and author metadata from the OpenAlex Works API."""
+
+from __future__ import annotations
+
+import time
+from typing import Any
+
+import requests
+
+from classifier import classify_research_direction, match_keywords
+from config import OPENALEX_MAILTO, OPENALEX_PER_QUERY
+
+
+OPENALEX_WORKS_URL = "https://api.openalex.org/works"
+REQUEST_TIMEOUT_SECONDS = 30
+
+
+def _restore_abstract(abstract_inverted_index: dict[str, list[int]] | None) -> str:
+    """Convert OpenAlex's inverted-index abstract into normal text."""
+    if not abstract_inverted_index:
+        return ""
+
+    positioned_words: list[tuple[int, str]] = []
+    for word, positions in abstract_inverted_index.items():
+        for position in positions:
+            positioned_words.append((position, word))
+
+    return " ".join(word for _, word in sorted(positioned_words))
+
+
+def _paper_url(work: dict[str, Any]) -> str:
+    """Pick the best public URL available for a paper."""
+    primary_location = work.get("primary_location") or {}
+    best_oa_location = work.get("best_oa_location") or {}
+
+    for candidate in [
+        primary_location.get("landing_page_url"),
+        primary_location.get("pdf_url"),
+        best_oa_location.get("landing_page_url"),
+        best_oa_location.get("pdf_url"),
+        work.get("doi"),
+        work.get("id"),
+    ]:
+        if candidate:
+            return candidate
+
+    return ""
+
+
+def _institution_for_author(authorship: dict[str, Any]) -> str:
+    """Return a semicolon-separated institution list for one authorship."""
+    institutions = authorship.get("institutions") or []
+    institution_names = [
+        institution.get("display_name", "")
+        for institution in institutions
+        if institution.get("display_name")
+    ]
+    return "; ".join(dict.fromkeys(institution_names))
+
+
+def _query_openalex(
+    session: requests.Session,
+    conference: str,
+    year: int,
+    keyword: str,
+    per_query: int,
+) -> list[dict[str, Any]]:
+    """Search OpenAlex for one conference/year/keyword combination."""
+    params: dict[str, Any] = {
+        # OpenAlex search covers title, abstract, and full text where available.
+        # Including the conference name keeps Phase 1 simple without needing
+        # conference-specific parsers.
+        "search": f"{conference} {keyword}",
+        "filter": f"from_publication_date:{year}-01-01,to_publication_date:{year}-12-31",
+        "per-page": per_query,
+        "select": ",".join(
+            [
+                "id",
+                "doi",
+                "display_name",
+                "publication_year",
+                "abstract_inverted_index",
+                "authorships",
+                "primary_location",
+                "best_oa_location",
+            ]
+        ),
+    }
+
+    if OPENALEX_MAILTO:
+        params["mailto"] = OPENALEX_MAILTO
+
+    response = session.get(OPENALEX_WORKS_URL, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
+    response.raise_for_status()
+    return response.json().get("results", [])
+
+
+def fetch_openalex_papers(
+    conferences: list[str],
+    years: list[int],
+    keywords: list[str],
+    per_query: int = OPENALEX_PER_QUERY,
+    request_pause_seconds: float = 0.1,
+) -> list[dict[str, Any]]:
+    """Fetch and normalize OpenAlex results into paper-author CSV rows."""
+    rows: list[dict[str, Any]] = []
+    seen_papers: dict[str, dict[str, Any]] = {}
+
+    with requests.Session() as session:
+        for conference in conferences:
+            for year in years:
+                for keyword in keywords:
+                    try:
+                        works = _query_openalex(session, conference, year, keyword, per_query)
+                    except requests.RequestException as exc:
+                        print(
+                            f"[WARN] OpenAlex request failed: conference={conference}, "
+                            f"year={year}, keyword={keyword}, error={exc}"
+                        )
+                        continue
+
+                    for work in works:
+                        paper_id = work.get("id") or work.get("doi") or work.get("display_name")
+                        if not paper_id:
+                            continue
+
+                        title = work.get("display_name") or ""
+                        abstract = _restore_abstract(work.get("abstract_inverted_index"))
+                        matched = match_keywords(title, abstract)
+
+                        # Keep only papers that actually match one of the target
+                        # keywords in title/abstract after retrieval.
+                        if not matched:
+                            continue
+
+                        if paper_id not in seen_papers:
+                            seen_papers[paper_id] = {
+                                "conference": conference,
+                                "year": work.get("publication_year") or year,
+                                "paper_title": title,
+                                "paper_url": _paper_url(work),
+                                "abstract": abstract,
+                                "authors": "",
+                                "matched_keywords": set(matched),
+                                "research_direction": set(classify_research_direction(matched)),
+                                "source": "OpenAlex",
+                                "authorships": work.get("authorships") or [],
+                            }
+                        else:
+                            seen_papers[paper_id]["matched_keywords"].update(matched)
+                            seen_papers[paper_id]["research_direction"].update(
+                                classify_research_direction(matched)
+                            )
+
+                    time.sleep(request_pause_seconds)
+
+    for paper in seen_papers.values():
+        authorships = paper.pop("authorships", [])
+        author_names = [
+            (authorship.get("author") or {}).get("display_name", "")
+            for authorship in authorships
+            if (authorship.get("author") or {}).get("display_name")
+        ]
+        paper["authors"] = "; ".join(author_names)
+        paper["matched_keywords"] = "; ".join(sorted(paper["matched_keywords"]))
+        paper["research_direction"] = "; ".join(sorted(paper["research_direction"]))
+
+        if authorships:
+            for index, authorship in enumerate(authorships, start=1):
+                author = authorship.get("author") or {}
+                row = {
+                    **paper,
+                    "author_name": author.get("display_name", ""),
+                    "author_order": index,
+                    "institution": _institution_for_author(authorship),
+                }
+                rows.append(row)
+        else:
+            rows.append({**paper, "author_name": "", "author_order": "", "institution": ""})
+
+    return rows
