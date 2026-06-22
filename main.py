@@ -7,6 +7,7 @@ import argparse
 from config import CONFERENCES, KEYWORDS, OPENALEX_PER_QUERY, OUTPUT_CSV, YEARS
 from export_csv import export_papers_authors_csv
 from fetch_openalex import fetch_openalex_papers
+from sync_feishu import sync_csv_to_feishu
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,6 +41,11 @@ def parse_args() -> argparse.Namespace:
         choices=KEYWORDS,
         help="Limit to one or more configured keywords. Can be passed multiple times.",
     )
+    parser.add_argument(
+        "--sync-feishu",
+        action="store_true",
+        help="Sync the exported CSV rows to Feishu Bitable after CSV export.",
+    )
     return parser.parse_args()
 
 
@@ -64,6 +70,13 @@ def main() -> None:
 
     output_path = export_papers_authors_csv(rows, args.output)
     print(f"Exported {len(rows)} paper-author rows to {output_path}")
+
+    if args.sync_feishu:
+        try:
+            written_count = sync_csv_to_feishu(str(output_path))
+            print(f"Feishu sync completed, wrote {written_count} new rows")
+        except Exception as exc:
+            print(f"[ERROR] Feishu sync failed: {exc}")
 
 
 if __name__ == "__main__":
