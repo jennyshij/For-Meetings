@@ -56,3 +56,12 @@ Optional environment variables:
 - `OPENALEX_MAILTO`: email address for OpenAlex polite pool requests.
 - `OPENALEX_PER_QUERY`: default number of OpenAlex works per query.
 - `OUTPUT_CSV`: default output file path.
+
+## Phase 1 data-source note
+
+OpenAlex conference metadata is useful but incomplete, especially for some
+robotics conference proceedings and year-specific IEEE/CVF venues. This
+minimal version prefers known OpenAlex source IDs when available and otherwise
+requires visible conference evidence in paper metadata before assigning a
+conference label. Later phases can add OpenReview, arXiv, Semantic Scholar, and
+conference accepted-paper page parsers to improve coverage.
