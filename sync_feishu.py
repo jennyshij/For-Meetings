@@ -201,15 +201,16 @@ def read_csv_records(csv_path: str) -> list[dict[str, Any]]:
     return records
 
 
-def _coerce_bitable_value(csv_column: str, value: Any) -> Any:
-    """Convert selected CSV string values into Feishu-friendly field values."""
+def _coerce_bitable_value(csv_column: str, value: Any) -> str:
+    """Convert CSV values into Feishu-friendly text values.
+
+    The target Bitable currently exposes fields such as author_order as
+    Multiline/Text, so keep values as strings instead of inferring numbers.
+    """
     if value is None:
         return ""
 
-    text = str(value).strip()
-    if csv_column in {"year", "author_order"}:
-        return int(text) if text.isdigit() else ""
-    return text
+    return str(value).strip()
 
 
 def build_feishu_record(row: dict[str, Any]) -> dict[str, dict[str, Any]]:
