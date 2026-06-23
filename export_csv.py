@@ -16,6 +16,7 @@ CSV_COLUMNS = [
     "author_name",
     "institution",
     "education_history",
+    "career_history",
     "advisor",
     "relations_conflicts",
     "email",

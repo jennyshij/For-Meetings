@@ -22,6 +22,7 @@ OPENREVIEW_INVITATIONS = {
 }
 REQUEST_TIMEOUT_SECONDS = 10
 OPENREVIEW_RETRY_DELAYS_SECONDS = [2, 4, 8, 16]
+EMAIL_PATTERN = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?![\w.+-])")
 
 
 def _clean_text(value: Any) -> str:
@@ -122,14 +123,45 @@ def _format_year_range(entry: dict[str, Any]) -> str:
     if start and end:
         return f"{start}-{end}"
     if start:
-        return f"{start}-"
+        return f"{start}-present"
     if end:
         return f"-{end}"
     return ""
 
 
-def _format_history_entry(entry: dict[str, Any]) -> str:
-    """Format one OpenReview history entry."""
+def _institution_type(entry: dict[str, Any]) -> str:
+    """Read institution.type from an OpenReview history entry."""
+    institution = entry.get("institution")
+    if isinstance(institution, dict):
+        return _clean_text(institution.get("type")).lower()
+    return ""
+
+
+def _degree_text(entry: dict[str, Any]) -> str:
+    """Read degree from common OpenReview history shapes."""
+    degree = entry.get("degree")
+    if degree:
+        return _clean_text(degree)
+
+    position = _clean_text(entry.get("position"))
+    position_lower = position.lower()
+    degree_terms = ["phd", "ph.d", "doctor", "ms", "m.s", "master", "bs", "b.s", "bachelor"]
+    if any(term in position_lower for term in degree_terms):
+        return position
+    return ""
+
+
+def _format_education_history_entry(entry: dict[str, Any]) -> str:
+    """Format one education history entry."""
+    degree = _degree_text(entry) or _clean_text(entry.get("position"))
+    institution = _clean_text(entry.get("institution"))
+    years = _format_year_range(entry)
+    parts = [part for part in [degree, institution, years] if part]
+    return ", ".join(parts)
+
+
+def _format_career_history_entry(entry: dict[str, Any]) -> str:
+    """Format one career/employment history entry."""
     position = _clean_text(entry.get("position"))
     institution = _clean_text(entry.get("institution"))
     years = _format_year_range(entry)
@@ -144,7 +176,14 @@ def _is_current_history_entry(entry: dict[str, Any]) -> bool:
 
 def _is_education_history_entry(entry: dict[str, Any]) -> bool:
     """Identify likely education entries in OpenReview history."""
+    if entry.get("degree"):
+        return True
+
     position = _clean_text(entry.get("position")).lower()
+    institution_type = _institution_type(entry)
+    if institution_type in {"education", "university", "college", "school"}:
+        return True
+
     education_terms = [
         "student",
         "phd",
@@ -156,6 +195,37 @@ def _is_education_history_entry(entry: dict[str, Any]) -> bool:
         "graduate",
     ]
     return any(term in position for term in education_terms)
+
+
+def _is_career_history_entry(entry: dict[str, Any]) -> bool:
+    """Identify likely career/employment entries in OpenReview history."""
+    return bool(entry.get("position")) and not _is_education_history_entry(entry)
+
+
+def _extract_public_email(content: dict[str, Any]) -> str:
+    """Extract a non-redacted email from public OpenReview profile fields."""
+    candidates = []
+    for key in ["emailsConfirmed", "preferredEmail", "emails"]:
+        candidates.extend(_as_list(content.get(key)))
+
+    for candidate in candidates:
+        text = _clean_text(candidate)
+        if not text or "*" in text:
+            continue
+        match = EMAIL_PATTERN.search(text)
+        if match:
+            return match.group(0)
+    return ""
+
+
+def _profile_lookup_urls(content: dict[str, Any]) -> str:
+    """Return profile links that email enrichment can also inspect."""
+    urls = []
+    for key in ["gscholar", "dblp"]:
+        url = _clean_text(content.get(key))
+        if url:
+            urls.append(url)
+    return "; ".join(dict.fromkeys(urls))
 
 
 def extract_openreview_profile_fields(profile: dict[str, Any]) -> dict[str, str]:
@@ -182,9 +252,13 @@ def extract_openreview_profile_fields(profile: dict[str, Any]) -> dict[str, str]
         elif institution or title:
             current_affiliations.append(institution or title)
 
-    education_history = [
-        _format_history_entry(entry) for entry in history if _is_education_history_entry(entry)
-    ]
+    education_history = []
+    career_history = []
+    for entry in history:
+        if _is_education_history_entry(entry):
+            education_history.append(_format_education_history_entry(entry))
+        elif _is_career_history_entry(entry):
+            career_history.append(_format_career_history_entry(entry))
 
     advisor_relations = []
     relation_summaries = []
@@ -200,12 +274,15 @@ def extract_openreview_profile_fields(profile: dict[str, Any]) -> dict[str, str]
     return {
         "openreview_title": "; ".join(dict.fromkeys(current_titles)),
         "openreview_institution": "; ".join(dict.fromkeys(current_affiliations or current_institutions)),
-        "education_history": "; ".join(dict.fromkeys(filter(None, education_history))),
+        "education_history": " | ".join(dict.fromkeys(filter(None, education_history))),
+        "career_history": " | ".join(dict.fromkeys(filter(None, career_history))),
         "advisor": "; ".join(dict.fromkeys(filter(None, advisor_relations))),
         "relations_conflicts": "; ".join(dict.fromkeys(filter(None, relation_summaries))),
+        "email": _extract_public_email(content),
         "homepage": _clean_text(content.get("homepage")),
         "linkedin": _clean_text(content.get("linkedin")),
         "github": _clean_text(content.get("github")),
+        "email_lookup_urls": _profile_lookup_urls(content),
     }
 
 
@@ -259,11 +336,14 @@ def enrich_rows_with_openreview(
             row["institution"] = _merge_institution_with_openreview(row, profile_fields)
             for field in [
                 "education_history",
+                "career_history",
                 "advisor",
                 "relations_conflicts",
+                "email",
                 "homepage",
                 "linkedin",
                 "github",
+                "email_lookup_urls",
             ]:
                 if profile_fields.get(field) and not row.get(field):
                     row[field] = profile_fields[field]
@@ -401,12 +481,14 @@ def fetch_openreview_papers(
                             "openreview_id": "",
                             "institution": "",
                             "education_history": "",
+                            "career_history": "",
                             "advisor": "",
                             "relations_conflicts": "",
                             "email": "",
                             "homepage": "",
                             "linkedin": "",
                             "github": "",
+                            "email_lookup_urls": "",
                             "matched_keywords": matched_keywords,
                             "source": "OpenReview",
                         }
@@ -426,12 +508,14 @@ def fetch_openreview_papers(
                             "openreview_id": authorids[index] if index < len(authorids) else "",
                             "institution": _author_affiliation_for_index(author_affiliations, index),
                             "education_history": "",
+                            "career_history": "",
                             "advisor": "",
                             "relations_conflicts": "",
                             "email": "",
                             "homepage": "",
                             "linkedin": "",
                             "github": "",
+                            "email_lookup_urls": "",
                             "matched_keywords": matched_keywords,
                             "source": "OpenReview",
                         }

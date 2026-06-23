@@ -37,6 +37,7 @@ FIELD_MAPPING = {
     "author_name": "author_name",
     "institution": "institution",
     "education_history": "education_history",
+    "career_history": "career_history",
     "advisor": "advisor",
     "relations_conflicts": "relations_conflicts",
     "email": "email",

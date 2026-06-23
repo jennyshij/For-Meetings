@@ -43,6 +43,7 @@ The output CSV contains:
 - author_name
 - institution
 - education_history
+- career_history
 - advisor
 - relations_conflicts
 - email
@@ -90,7 +91,7 @@ Sync behavior:
   `paper_url + author_name`.
 - Writes at most 20 records per batch and sleeps 0.5 seconds between batches.
 - Logs batch write failures and continues with later batches.
-- Writes only the 13 configured Bitable fields. Missing fields in the target
+- Writes only the configured Bitable fields. Missing fields in the target
   table are logged as warnings and skipped.
 
 ## Module test commands

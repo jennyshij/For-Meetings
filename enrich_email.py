@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 import pandas as pd
 import requests
@@ -27,45 +28,80 @@ def extract_email_from_text(text: str) -> str:
     return ""
 
 
-def fetch_email_from_homepage(homepage: str, timeout: int = REQUEST_TIMEOUT_SECONDS) -> str:
-    """Fetch one homepage and extract the first email address with regex."""
-    if not homepage:
+def _compact_snippet(text: str, max_length: int = 500) -> str:
+    """Return a single-line diagnostic snippet."""
+    return " ".join((text or "")[:max_length].split())
+
+
+def _lookup_urls_for_row(row: dict[str, Any]) -> list[str]:
+    """Return homepage plus optional profile links to inspect for emails."""
+    urls = []
+    for key in ["homepage", "email_lookup_urls"]:
+        value = str(row.get(key, "") or "").strip()
+        if not value:
+            continue
+        urls.extend(part.strip() for part in value.split(";") if part.strip())
+    return list(dict.fromkeys(urls))
+
+
+def fetch_email_from_url(url: str, timeout: int = REQUEST_TIMEOUT_SECONDS) -> str:
+    """Fetch one URL and extract the first email address with diagnostics."""
+    if not url:
         return ""
 
+    label = urlparse(url).netloc or url
     try:
         response = requests.get(
-            homepage,
+            url,
             headers={"User-Agent": USER_AGENT},
             timeout=timeout,
         )
         response.raise_for_status()
+        print(f"[INFO] Email lookup success url={url} status={response.status_code}")
+    except requests.Timeout:
+        print(f"[WARN] Email lookup timeout url={url}")
+        return ""
     except requests.RequestException as exc:
-        print(f"[WARN] Email enrichment skipped homepage={homepage}: {exc}")
+        print(f"[WARN] Email lookup failed url={url}: {exc}")
         return ""
 
-    return extract_email_from_text(response.text[:1_000_000])
+    email = extract_email_from_text(response.text[:1_000_000])
+    if email:
+        print(f"[INFO] Email found from {label}: {email}")
+    else:
+        print(f"[INFO] No email found url={url}; first_500_chars={_compact_snippet(response.text)}")
+    return email
+
+
+def fetch_email_from_homepage(homepage: str, timeout: int = REQUEST_TIMEOUT_SECONDS) -> str:
+    """Backward-compatible wrapper for fetching an email from one homepage."""
+    return fetch_email_from_url(homepage, timeout=timeout)
 
 
 def enrich_rows_with_homepage_emails(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Fill missing email fields by scraping author homepages."""
-    homepage_cache: dict[str, str] = {}
+    url_cache: dict[str, str] = {}
     enriched_count = 0
+    homepage_author_count = sum(1 for row in rows if str(row.get("homepage", "") or "").strip())
+    print(f"[INFO] Email enrichment authors with homepage: {homepage_author_count}")
 
     for row in rows:
         if row.get("email"):
             continue
 
-        homepage = str(row.get("homepage", "") or "").strip()
-        if not homepage:
+        lookup_urls = _lookup_urls_for_row(row)
+        if not lookup_urls:
             continue
 
-        if homepage not in homepage_cache:
-            homepage_cache[homepage] = fetch_email_from_homepage(homepage)
+        for lookup_url in lookup_urls:
+            if lookup_url not in url_cache:
+                url_cache[lookup_url] = fetch_email_from_url(lookup_url)
 
-        email = homepage_cache[homepage]
-        if email:
-            row["email"] = email
-            enriched_count += 1
+            email = url_cache[lookup_url]
+            if email:
+                row["email"] = email
+                enriched_count += 1
+                break
 
     print(f"[INFO] Email enrichment filled {enriched_count} author rows")
     return rows
