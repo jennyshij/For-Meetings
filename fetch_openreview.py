@@ -10,8 +10,7 @@ from typing import Any
 
 import requests
 
-from classifier import classify_research_direction, match_keywords
-from config import OPENREVIEW_MAX_PAGES
+from classifier import classify_research_direction
 
 
 OPENREVIEW_API_URL = "https://api2.openreview.net"
@@ -441,7 +440,7 @@ def _fetch_openreview_notes_page(
     invitation: str,
     offset: int,
     limit: int,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], int | None, str]:
     """Fetch one OpenReview notes page."""
     params = {
         "invitation": invitation,
@@ -460,12 +459,45 @@ def _fetch_openreview_notes_page(
             params=params,
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
+        print(f"[INFO] OpenReview API request: {response.url}")
         if response.status_code == 429 and attempt < len(OPENREVIEW_RETRY_DELAYS_SECONDS):
             continue
         response.raise_for_status()
         break
 
-    return response.json().get("notes") or []
+    payload = response.json()
+    return payload.get("notes") or [], payload.get("count"), response.url
+
+
+def _keyword_variants(keywords: list[str]) -> list[str]:
+    """Expand OpenReview direct-fetch keyword variants."""
+    variants = list(keywords)
+    lowered = {keyword.lower() for keyword in keywords}
+    if "vla" in lowered or "vision language action" in lowered or "vision-language-action" in lowered:
+        variants.extend(
+            [
+                "VLA",
+                "Vision-Language-Action",
+                "Vision Language Action",
+                "visuomotor",
+            ]
+        )
+    return list(dict.fromkeys(variants))
+
+
+def _variant_matches(text: str, variant: str) -> bool:
+    """Case-insensitive title/abstract keyword match for OpenReview notes."""
+    if not text or not variant:
+        return False
+    if variant.lower() == "vla":
+        return re.search(r"(?<![A-Za-z0-9])VLA(?![A-Za-z0-9])", text, flags=re.I) is not None
+    return variant.lower() in text.lower()
+
+
+def _match_openreview_keywords(title: str, abstract: str, keywords: list[str]) -> list[str]:
+    """Match expanded keyword variants against title and abstract."""
+    combined_text = f"{title} {abstract}"
+    return [variant for variant in _keyword_variants(keywords) if _variant_matches(combined_text, variant)]
 
 
 def fetch_openreview_papers(
@@ -473,7 +505,6 @@ def fetch_openreview_papers(
     year: int,
     keywords: list[str],
     per_query: int = 50,
-    max_pages: int = OPENREVIEW_MAX_PAGES,
     accepted_only: bool = True,
     request_pause_seconds: float = 0.6,
 ) -> list[dict[str, Any]]:
@@ -488,18 +519,21 @@ def fetch_openreview_papers(
         print(f"[WARN] OpenReview direct fetch is not configured for {conference} {year}")
         return []
 
-    # The requested endpoint uses limit=50. Keep at least that page size even
-    # when --per-query is smaller, so the smoke test can reach relevant papers.
-    page_limit = max(per_query, 50)
+    page_limit = max(1, min(per_query, 1000))
     rows: list[dict[str, Any]] = []
     scanned_notes = 0
+    accepted_scanned_notes = 0
     matched_notes = 0
+    total_count: int | None = None
+    print(f"[INFO] OpenReview requested per-query: {per_query}")
+    print(f"[INFO] OpenReview effective page limit: {page_limit}")
+    print(f"[INFO] OpenReview keyword variants: {', '.join(_keyword_variants(keywords))}")
 
     with requests.Session() as session:
-        for page_index in range(max_pages):
-            offset = page_index * page_limit
+        offset = 0
+        while True:
             try:
-                notes = _fetch_openreview_notes_page(
+                notes, page_count, _request_url = _fetch_openreview_notes_page(
                     session=session,
                     invitation=invitation,
                     offset=offset,
@@ -507,7 +541,12 @@ def fetch_openreview_papers(
                 )
             except requests.RequestException as exc:
                 print(f"[WARN] OpenReview notes request failed at offset={offset}: {exc}")
+                offset += page_limit
                 continue
+
+            if page_count is not None and total_count is None:
+                total_count = page_count
+                print(f"[INFO] OpenReview total note count: {total_count}")
 
             if not notes:
                 break
@@ -516,11 +555,12 @@ def fetch_openreview_papers(
             for note in notes:
                 if accepted_only and not _is_accepted_openreview_note(note):
                     continue
+                accepted_scanned_notes += 1
 
                 content = note.get("content") or {}
                 title = _clean_text(_content_value(content, "title"))
                 abstract = _clean_text(_content_value(content, "abstract"))
-                matched = match_keywords(title, abstract, keywords)
+                matched = _match_openreview_keywords(title, abstract, keywords)
                 if not matched:
                     continue
 
@@ -603,10 +643,19 @@ def fetch_openreview_papers(
                     )
 
             time.sleep(request_pause_seconds)
+            offset += page_limit
+            if total_count is not None and offset >= total_count:
+                break
 
     print(
-        f"[INFO] OpenReview scanned {scanned_notes} notes, matched {matched_notes} papers, "
+        f"[INFO] OpenReview scanned {scanned_notes} notes, "
+        f"accepted_scanned {accepted_scanned_notes} notes, "
+        f"matched {matched_notes} papers, "
         f"emitted {len(rows)} author rows"
+    )
+    print(
+        f"[INFO] OpenReview keyword scan summary: scanned={accepted_scanned_notes}, "
+        f"matched={matched_notes}"
     )
     return enrich_rows_with_openreview(rows)
 
