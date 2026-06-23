@@ -141,6 +141,14 @@ def extract_openreview_profile_fields(profile: dict[str, Any]) -> dict[str, str]
         for entry in current_entries
         if _clean_text(entry.get("institution"))
     ]
+    current_affiliations = []
+    for entry in current_entries:
+        title = _clean_text(entry.get("position"))
+        institution = _clean_text(entry.get("institution"))
+        if institution and title:
+            current_affiliations.append(f"{institution} ({title})")
+        elif institution or title:
+            current_affiliations.append(institution or title)
 
     education_history = [
         _format_history_entry(entry) for entry in history if _is_education_history_entry(entry)
@@ -159,7 +167,7 @@ def extract_openreview_profile_fields(profile: dict[str, Any]) -> dict[str, str]
 
     return {
         "openreview_title": "; ".join(dict.fromkeys(current_titles)),
-        "openreview_institution": "; ".join(dict.fromkeys(current_institutions)),
+        "openreview_institution": "; ".join(dict.fromkeys(current_affiliations or current_institutions)),
         "education_history": "; ".join(dict.fromkeys(filter(None, education_history))),
         "advisor": "; ".join(dict.fromkeys(filter(None, advisor_relations))),
         "relations_conflicts": "; ".join(dict.fromkeys(filter(None, relation_summaries))),
@@ -175,10 +183,7 @@ def _merge_institution_with_openreview(row: dict[str, Any], profile_fields: dict
     openreview_institution = profile_fields.get("openreview_institution", "")
     openreview_title = profile_fields.get("openreview_title", "")
 
-    if openreview_institution and openreview_title:
-        openreview_label = f"{openreview_institution} ({openreview_title})"
-    else:
-        openreview_label = openreview_institution or openreview_title
+    openreview_label = openreview_institution or openreview_title
 
     parts = [part for part in [existing_institution, openreview_label] if part]
     return "; ".join(dict.fromkeys(parts))
