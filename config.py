@@ -170,5 +170,10 @@ OPENALEX_MAILTO = os.getenv("OPENALEX_MAILTO", "").strip()
 OPENALEX_PER_QUERY = int(os.getenv("OPENALEX_PER_QUERY", "10"))
 
 
+# OpenReview direct fetch scans ICLR 2026 submissions in pages. A page size of
+# at least 50 follows the OpenReview endpoint shape requested for Phase 1.5.
+OPENREVIEW_MAX_PAGES = int(os.getenv("OPENREVIEW_MAX_PAGES", "30"))
+
+
 # Output file requested for Phase 1.
 OUTPUT_CSV = os.getenv("OUTPUT_CSV", "papers_authors.csv")

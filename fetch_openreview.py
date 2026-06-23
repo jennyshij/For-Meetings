@@ -10,8 +10,16 @@ from typing import Any
 
 import requests
 
+from classifier import classify_research_direction, match_keywords
+from config import OPENREVIEW_MAX_PAGES
+
 
 OPENREVIEW_API_URL = "https://api2.openreview.net"
+OPENREVIEW_NOTES_URL = f"{OPENREVIEW_API_URL}/notes"
+OPENREVIEW_PROFILES_URL = f"{OPENREVIEW_API_URL}/profiles"
+OPENREVIEW_INVITATIONS = {
+    ("ICLR", 2026): "ICLR.cc/2026/Conference/-/Submission",
+}
 REQUEST_TIMEOUT_SECONDS = 10
 
 
@@ -29,6 +37,23 @@ def _clean_text(value: Any) -> str:
                 return _clean_text(value[key])
         return "; ".join(_clean_text(item) for item in value.values() if _clean_text(item))
     return str(value).strip()
+
+
+def _content_value(content: dict[str, Any], key: str, default: Any = "") -> Any:
+    """Read OpenReview content fields that are usually wrapped in {value: ...}."""
+    value = content.get(key, default)
+    if isinstance(value, dict) and "value" in value:
+        return value.get("value", default)
+    return value
+
+
+def _as_list(value: Any) -> list[Any]:
+    """Normalize OpenReview scalar/list content values into a list."""
+    if value is None or value == "":
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
 
 
 def candidate_profile_ids(author_name: str, max_suffix: int = 3) -> list[str]:
@@ -66,7 +91,7 @@ def fetch_openreview_profile(
     active_session = session or requests.Session()
     try:
         response = active_session.get(
-            f"{OPENREVIEW_API_URL}/profiles",
+            OPENREVIEW_PROFILES_URL,
             params={"id": author_id},
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
@@ -240,12 +265,186 @@ def enrich_rows_with_openreview(
     return rows
 
 
+def _is_accepted_openreview_note(note: dict[str, Any]) -> bool:
+    """Treat non-rejected and non-withdrawn ICLR 2026 notes as accepted/public."""
+    content = note.get("content") or {}
+    venueid = _clean_text(_content_value(content, "venueid")).lower()
+    venue = _clean_text(_content_value(content, "venue")).lower()
+    status_text = f"{venueid} {venue}"
+    rejected_terms = ["rejected", "withdrawn", "desk_rejected"]
+    return not any(term in status_text for term in rejected_terms)
+
+
+def _author_affiliation_for_index(author_affiliations: list[Any], index: int) -> str:
+    """Read the affiliation matching one author index when available."""
+    if index >= len(author_affiliations):
+        return ""
+    return _clean_text(author_affiliations[index])
+
+
+def _fetch_openreview_notes_page(
+    session: requests.Session,
+    invitation: str,
+    offset: int,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Fetch one OpenReview notes page."""
+    response = session.get(
+        OPENREVIEW_NOTES_URL,
+        params={
+            "invitation": invitation,
+            "details": "replyCount",
+            "offset": offset,
+            "limit": limit,
+        },
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    return response.json().get("notes") or []
+
+
+def fetch_openreview_papers(
+    conference: str,
+    year: int,
+    keywords: list[str],
+    per_query: int = 50,
+    max_pages: int = OPENREVIEW_MAX_PAGES,
+    accepted_only: bool = True,
+) -> list[dict[str, Any]]:
+    """Fetch paper-author rows directly from OpenReview notes.
+
+    This is primarily used for ICLR 2026, where OpenAlex may not have indexed
+    the accepted papers yet. It fetches notes first, filters title/abstract by
+    keyword, then emits one row per listed co-author.
+    """
+    invitation = OPENREVIEW_INVITATIONS.get((conference, year))
+    if not invitation:
+        print(f"[WARN] OpenReview direct fetch is not configured for {conference} {year}")
+        return []
+
+    # The requested endpoint uses limit=50. Keep at least that page size even
+    # when --per-query is smaller, so the smoke test can reach relevant papers.
+    page_limit = max(per_query, 50)
+    rows: list[dict[str, Any]] = []
+    scanned_notes = 0
+    matched_notes = 0
+
+    with requests.Session() as session:
+        for page_index in range(max_pages):
+            offset = page_index * page_limit
+            try:
+                notes = _fetch_openreview_notes_page(
+                    session=session,
+                    invitation=invitation,
+                    offset=offset,
+                    limit=page_limit,
+                )
+            except requests.RequestException as exc:
+                print(f"[WARN] OpenReview notes request failed at offset={offset}: {exc}")
+                continue
+
+            if not notes:
+                break
+
+            scanned_notes += len(notes)
+            for note in notes:
+                if accepted_only and not _is_accepted_openreview_note(note):
+                    continue
+
+                content = note.get("content") or {}
+                title = _clean_text(_content_value(content, "title"))
+                abstract = _clean_text(_content_value(content, "abstract"))
+                matched = match_keywords(title, abstract, keywords)
+                if not matched:
+                    continue
+
+                matched_notes += 1
+                paper_url = f"https://openreview.net/forum?id={note.get('forum') or note.get('id')}"
+                authors = [_clean_text(author) for author in _as_list(_content_value(content, "authors"))]
+                authorids = [
+                    _clean_text(author_id) for author_id in _as_list(_content_value(content, "authorids"))
+                ]
+                author_affiliations = _as_list(_content_value(content, "author_affiliations"))
+                authors_joined = "; ".join(author for author in authors if author)
+                research_direction = "; ".join(classify_research_direction(matched))
+                matched_keywords = "; ".join(matched)
+
+                if not authors:
+                    rows.append(
+                        {
+                            "paper_title": title,
+                            "year": year,
+                            "paper_url": paper_url,
+                            "abstract": abstract,
+                            "authors": authors_joined,
+                            "research_direction": research_direction,
+                            "author_name": "",
+                            "openreview_id": "",
+                            "institution": "",
+                            "education_history": "",
+                            "advisor": "",
+                            "relations_conflicts": "",
+                            "email": "",
+                            "homepage": "",
+                            "linkedin": "",
+                            "github": "",
+                            "matched_keywords": matched_keywords,
+                            "source": "OpenReview",
+                        }
+                    )
+                    continue
+
+                for index, author_name in enumerate(authors):
+                    rows.append(
+                        {
+                            "paper_title": title,
+                            "year": year,
+                            "paper_url": paper_url,
+                            "abstract": abstract,
+                            "authors": authors_joined,
+                            "research_direction": research_direction,
+                            "author_name": author_name,
+                            "openreview_id": authorids[index] if index < len(authorids) else "",
+                            "institution": _author_affiliation_for_index(author_affiliations, index),
+                            "education_history": "",
+                            "advisor": "",
+                            "relations_conflicts": "",
+                            "email": "",
+                            "homepage": "",
+                            "linkedin": "",
+                            "github": "",
+                            "matched_keywords": matched_keywords,
+                            "source": "OpenReview",
+                        }
+                    )
+
+    print(
+        f"[INFO] OpenReview scanned {scanned_notes} notes, matched {matched_notes} papers, "
+        f"emitted {len(rows)} author rows"
+    )
+    return enrich_rows_with_openreview(rows)
+
+
 def main() -> None:
     """Small command-line helper for testing OpenReview profile extraction."""
-    parser = argparse.ArgumentParser(description="Fetch one OpenReview author profile.")
+    parser = argparse.ArgumentParser(description="Fetch OpenReview profiles or ICLR 2026 papers.")
     parser.add_argument("--author-id", help="Exact OpenReview profile id, e.g. ~Chelsea_Finn1.")
     parser.add_argument("--author-name", help="Author name used to build common profile id candidates.")
+    parser.add_argument("--conference", choices=["ICLR"], help="Conference for direct paper fetching.")
+    parser.add_argument("--year", type=int, help="Year for direct paper fetching.")
+    parser.add_argument("--keyword", action="append", help="Keyword for direct paper filtering.")
+    parser.add_argument("--per-query", type=int, default=50, help="OpenReview notes page size.")
     args = parser.parse_args()
+
+    if args.conference and args.year:
+        rows = fetch_openreview_papers(
+            conference=args.conference,
+            year=args.year,
+            keywords=args.keyword or ["VLA", "Vision Language Action"],
+            per_query=args.per_query,
+        )
+        print(f"Fetched {len(rows)} OpenReview author rows")
+        return
 
     profile_ids = [args.author_id] if args.author_id else candidate_profile_ids(args.author_name or "")
     with requests.Session() as session:

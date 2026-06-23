@@ -56,6 +56,13 @@ Optional email enrichment from author homepages:
 python main.py --conference ICLR --year 2024 --keyword "Reinforcement Learning" --per-query 1 --enrich-email
 ```
 
+Direct OpenReview fetch for ICLR 2026, useful before OpenAlex indexes the
+conference:
+
+```bash
+python main.py --conference ICLR --year 2026 --keyword "VLA" --source openreview --per-query 10
+```
+
 ## Feishu sync
 
 Create a local `.env` file with Feishu self-built app credentials and Bitable
@@ -98,6 +105,12 @@ OpenReview profile extraction:
 
 ```bash
 python fetch_openreview.py --author-id "~Chelsea_Finn1"
+```
+
+OpenReview direct paper fetch:
+
+```bash
+python fetch_openreview.py --conference ICLR --year 2026 --keyword "VLA" --per-query 10
 ```
 
 Homepage email extraction:
