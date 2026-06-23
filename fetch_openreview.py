@@ -21,7 +21,10 @@ OPENREVIEW_INVITATIONS = {
 }
 REQUEST_TIMEOUT_SECONDS = 10
 OPENREVIEW_NOTES_RETRY_DELAYS_SECONDS = [2, 4, 8, 16]
-OPENREVIEW_PROFILE_RETRY_DELAYS_SECONDS = [1]
+OPENREVIEW_PROFILE_BATCH_SIZE = 10
+OPENREVIEW_PROFILE_REQUEST_PAUSE_SECONDS = 2
+OPENREVIEW_PROFILE_RATE_LIMIT_SLEEP_SECONDS = 10
+OPENREVIEW_PROFILE_MAX_RETRIES = 3
 EMAIL_PATTERN = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?![\w.+-])")
 
 
@@ -89,39 +92,81 @@ def fetch_openreview_profile(
     session: requests.Session | None = None,
 ) -> dict[str, Any] | None:
     """Fetch one OpenReview profile by exact profile id."""
+    profiles = fetch_openreview_profiles_batch([author_id], batch_size=1, session=session)
+    return profiles.get(author_id)
+
+
+def _profile_usernames(profile: dict[str, Any]) -> list[str]:
+    """Return every username alias that can identify an OpenReview profile."""
+    usernames = []
+    if profile.get("id"):
+        usernames.append(str(profile["id"]))
+
+    content = profile.get("content") or {}
+    for name_entry in content.get("names") or []:
+        if isinstance(name_entry, dict) and name_entry.get("username"):
+            usernames.append(str(name_entry["username"]))
+
+    return list(dict.fromkeys(usernames))
+
+
+def fetch_openreview_profiles_batch(
+    author_ids: list[str],
+    batch_size: int = OPENREVIEW_PROFILE_BATCH_SIZE,
+    session: requests.Session | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Fetch OpenReview profiles in batches and map all username aliases."""
+    unique_author_ids = [author_id for author_id in dict.fromkeys(author_ids) if author_id]
+    if not unique_author_ids:
+        return {}
+
     owns_session = session is None
     active_session = session or requests.Session()
+    results: dict[str, dict[str, Any]] = {}
+
     try:
-        for attempt, delay_seconds in enumerate([0] + OPENREVIEW_PROFILE_RETRY_DELAYS_SECONDS):
-            if delay_seconds:
-                print(f"[WARN] OpenReview profile rate limited for {author_id}; retrying in {delay_seconds}s")
-                time.sleep(delay_seconds)
-            response = active_session.get(
-                OPENREVIEW_PROFILES_URL,
-                params={"id": author_id},
-                timeout=REQUEST_TIMEOUT_SECONDS,
-            )
-            if response.status_code == 429 and attempt < len(OPENREVIEW_PROFILE_RETRY_DELAYS_SECONDS):
+        for batch_start in range(0, len(unique_author_ids), batch_size):
+            batch = unique_author_ids[batch_start : batch_start + batch_size]
+            ids_str = ",".join(batch)
+            time.sleep(OPENREVIEW_PROFILE_REQUEST_PAUSE_SECONDS)
+
+            response = None
+            for attempt in range(1, OPENREVIEW_PROFILE_MAX_RETRIES + 1):
+                try:
+                    response = active_session.get(
+                        OPENREVIEW_PROFILES_URL,
+                        params={"ids": ids_str},
+                        timeout=15,
+                    )
+                    if response.status_code == 429:
+                        print(
+                            "[WARN] OpenReview profile batch rate limited; "
+                            f"attempt={attempt}/{OPENREVIEW_PROFILE_MAX_RETRIES}, "
+                            f"batch_size={len(batch)}"
+                        )
+                        if attempt < OPENREVIEW_PROFILE_MAX_RETRIES:
+                            time.sleep(OPENREVIEW_PROFILE_RATE_LIMIT_SLEEP_SECONDS)
+                            continue
+                    response.raise_for_status()
+                    break
+                except requests.RequestException as exc:
+                    print(f"[WARN] OpenReview profile batch request failed for ids={ids_str}: {exc}")
+                    response = None
+                    break
+
+            if response is None or response.status_code != 200:
+                print(f"[WARN] OpenReview profile batch skipped after retries for ids={ids_str}")
                 continue
-            response.raise_for_status()
-            break
-        payload = response.json()
-    except requests.RequestException as exc:
-        print(f"[WARN] OpenReview profile request failed for {author_id}: {exc}")
-        return None
+
+            payload = response.json()
+            for profile in payload.get("profiles") or []:
+                for username in _profile_usernames(profile):
+                    results[username] = profile
     finally:
         if owns_session:
             active_session.close()
 
-    profiles = payload.get("profiles") or []
-    for profile in profiles:
-        if profile.get("id") == author_id:
-            return profile
-        content = profile.get("content") or {}
-        for name_entry in content.get("names") or []:
-            if isinstance(name_entry, dict) and name_entry.get("username") == author_id:
-                return profile
-    return profiles[0] if profiles else None
+    return results
 
 
 def _format_year_range(entry: dict[str, Any]) -> str:
@@ -372,10 +417,26 @@ def enrich_rows_with_openreview(
     request_pause_seconds: float = 0.1,
 ) -> list[dict[str, Any]]:
     """Enrich paper-author rows with OpenReview profile fields when available."""
-    cache: dict[str, dict[str, str]] = {}
+    profile_ids_by_author_key: dict[str, list[str]] = {}
+    all_profile_ids: list[str] = []
     matched_count = 0
 
+    for row in rows:
+        author_key = _clean_text(row.get("openreview_id") or row.get("author_name"))
+        if not author_key or author_key in profile_ids_by_author_key:
+            continue
+
+        if row.get("openreview_id"):
+            profile_ids = [_clean_text(row.get("openreview_id"))]
+        else:
+            profile_ids = candidate_profile_ids(_clean_text(row.get("author_name")))
+
+        profile_ids_by_author_key[author_key] = profile_ids
+        all_profile_ids.extend(profile_ids)
+
     with requests.Session() as session:
+        profile_map = fetch_openreview_profiles_batch(all_profile_ids, session=session)
+
         for index, row in enumerate(rows, start=1):
             if index == 1 or index % 50 == 0 or index == len(rows):
                 print(f"[INFO] OpenReview profile enrichment progress: {index}/{len(rows)} author rows")
@@ -384,23 +445,13 @@ def enrich_rows_with_openreview(
             if not author_key:
                 continue
 
-            if author_key not in cache:
-                profile = None
-                profile_ids = []
-                if row.get("openreview_id"):
-                    profile_ids = [_clean_text(row.get("openreview_id"))]
-                else:
-                    profile_ids = candidate_profile_ids(_clean_text(row.get("author_name")))
+            profile = None
+            for profile_id in profile_ids_by_author_key.get(author_key, []):
+                profile = profile_map.get(profile_id)
+                if profile:
+                    break
 
-                for profile_id in profile_ids:
-                    profile = fetch_openreview_profile(profile_id, session=session)
-                    if profile:
-                        break
-                    time.sleep(request_pause_seconds)
-
-                cache[author_key] = extract_openreview_profile_fields(profile) if profile else {}
-
-            profile_fields = cache[author_key]
+            profile_fields = extract_openreview_profile_fields(profile) if profile else {}
             if not profile_fields:
                 continue
 
