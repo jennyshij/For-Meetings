@@ -114,6 +114,13 @@ def fetch_openreview_profile(
             active_session.close()
 
     profiles = payload.get("profiles") or []
+    for profile in profiles:
+        if profile.get("id") == author_id:
+            return profile
+        content = profile.get("content") or {}
+        for name_entry in content.get("names") or []:
+            if isinstance(name_entry, dict) and name_entry.get("username") == author_id:
+                return profile
     return profiles[0] if profiles else None
 
 
@@ -152,21 +159,20 @@ def _degree_text(entry: dict[str, Any]) -> str:
     return ""
 
 
-def _format_education_history_entry(entry: dict[str, Any]) -> str:
-    """Format one education history entry."""
-    degree = _degree_text(entry) or _clean_text(entry.get("position"))
-    institution = _clean_text(entry.get("institution"))
-    years = _format_year_range(entry)
-    parts = [part for part in [degree, institution, years] if part]
-    return ", ".join(parts)
+def _history_institution_parts(entry: dict[str, Any]) -> list[str]:
+    """Return department and institution name from a history entry."""
+    institution = entry.get("institution") if isinstance(entry.get("institution"), dict) else {}
+    return [
+        _clean_text(institution.get("department")),
+        _clean_text(institution.get("name")),
+    ]
 
 
-def _format_career_history_entry(entry: dict[str, Any]) -> str:
-    """Format one career/employment history entry."""
+def _format_history_entry(entry: dict[str, Any]) -> str:
+    """Format one OpenReview history entry."""
     position = _clean_text(entry.get("position") or entry.get("degree"))
-    institution = _clean_text(entry.get("institution"))
     years = _format_year_range(entry)
-    parts = [part for part in [position, institution, years] if part]
+    parts = [position, *_history_institution_parts(entry), years]
     return ", ".join(parts)
 
 
@@ -230,13 +236,12 @@ def _profile_lookup_urls(content: dict[str, Any]) -> str:
 
 
 def _history_entry_sort_key(entry: dict[str, Any]) -> tuple[int, int]:
-    """Sort history entries with current entries first, then latest year."""
+    """Sort history entries with current entries first, then latest start year."""
     end = entry.get("end")
     start = entry.get("start")
     is_current = 1 if end in [None, "", 0] else 0
-    year = start if is_current else end
     try:
-        sortable_year = int(year)
+        sortable_year = int(start)
     except (TypeError, ValueError):
         sortable_year = 0
     return (is_current, sortable_year)
@@ -259,11 +264,7 @@ def _latest_history_entry(history: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _format_current_institution(entry: dict[str, Any]) -> str:
     """Format the primary institution field from the latest current history entry."""
-    institution = entry.get("institution") if isinstance(entry.get("institution"), dict) else {}
-    parts = [
-        _clean_text(entry.get("position") or entry.get("degree")),
-        _clean_text(institution.get("name")),
-    ]
+    parts = [_clean_text(entry.get("position") or entry.get("degree")), *_history_institution_parts(entry)]
     return ", ".join(part for part in parts if part)
 
 
@@ -272,6 +273,7 @@ def _format_institution_detail(entry: dict[str, Any]) -> str:
     institution = entry.get("institution") if isinstance(entry.get("institution"), dict) else {}
     parts = [
         _clean_text(entry.get("position") or entry.get("degree")),
+        _clean_text(institution.get("department")),
         _clean_text(institution.get("name")),
         _clean_text(institution.get("stateProvince")),
         _clean_text(institution.get("country")),
@@ -303,6 +305,13 @@ def _extract_expertise(content: dict[str, Any]) -> str:
     return " | ".join(dict.fromkeys(expertise_terms))
 
 
+def _is_education_history_text(history_text: str) -> bool:
+    """Return True for degree/student history strings."""
+    terms = ["Undergrad", "Bachelor", "Master", "PhD", "MS", "BS", "MEng"]
+    lowered = history_text.lower()
+    return any(term.lower() in lowered for term in terms)
+
+
 def extract_openreview_profile_fields(profile: dict[str, Any]) -> dict[str, str]:
     """Extract normalized fields needed by the recruiting mapping CSV."""
     content = profile.get("content") or {}
@@ -310,13 +319,12 @@ def extract_openreview_profile_fields(profile: dict[str, Any]) -> dict[str, str]
     relations = content.get("relations") or []
     current_entry = _current_history_entry(history)
     latest_entry = _latest_history_entry(history)
+    primary_entry = current_entry or latest_entry
 
-    education_history = []
     career_history = []
     for entry in sorted(history, key=_history_entry_sort_key, reverse=True):
-        if entry.get("degree"):
-            education_history.append(_format_education_history_entry(entry))
-        career_history.append(_format_career_history_entry(entry))
+        career_history.append(_format_history_entry(entry))
+    education_history = [entry for entry in career_history if _is_education_history_text(entry)]
 
     advisor_relations = []
     relation_summaries = []
@@ -327,17 +335,20 @@ def extract_openreview_profile_fields(profile: dict[str, Any]) -> dict[str, str]
         if "advisor" in relation_type_lower and "advisee" not in relation_type_lower:
             advisor_relations.append(relation_name)
         elif relation_type or relation_name:
-            relation_summaries.append(": ".join(part for part in [relation_type, relation_name] if part))
+            if relation_name and relation_type:
+                relation_summaries.append(f"{relation_name}({relation_type})")
+            else:
+                relation_summaries.append(relation_name or relation_type)
 
     return {
-        "openreview_institution": _format_current_institution(current_entry),
-        "institution_detail": _format_institution_detail(latest_entry),
-        "institution_domain": _institution_domain(latest_entry),
+        "openreview_institution": _format_current_institution(primary_entry),
+        "institution_detail": _format_institution_detail(primary_entry),
+        "institution_domain": _institution_domain(primary_entry),
         "education_history": " | ".join(dict.fromkeys(filter(None, education_history))),
         "career_history": " | ".join(dict.fromkeys(filter(None, career_history))),
         "expertise": _extract_expertise(content),
-        "advisor": "; ".join(dict.fromkeys(filter(None, advisor_relations))),
-        "relations_conflicts": "; ".join(dict.fromkeys(filter(None, relation_summaries))),
+        "advisor": " | ".join(dict.fromkeys(filter(None, advisor_relations))),
+        "relations_conflicts": " | ".join(dict.fromkeys(filter(None, relation_summaries))),
         "email": _extract_public_email(content),
         "homepage": _clean_text(content.get("homepage")),
         "linkedin": _clean_text(content.get("linkedin")),
