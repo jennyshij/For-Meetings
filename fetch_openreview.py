@@ -21,6 +21,7 @@ OPENREVIEW_INVITATIONS = {
     ("ICLR", 2026): "ICLR.cc/2026/Conference/-/Submission",
 }
 REQUEST_TIMEOUT_SECONDS = 10
+OPENREVIEW_RETRY_DELAYS_SECONDS = [2, 4, 8, 16]
 
 
 def _clean_text(value: Any) -> str:
@@ -90,12 +91,18 @@ def fetch_openreview_profile(
     owns_session = session is None
     active_session = session or requests.Session()
     try:
-        response = active_session.get(
-            OPENREVIEW_PROFILES_URL,
-            params={"id": author_id},
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
+        for attempt, delay_seconds in enumerate([0] + OPENREVIEW_RETRY_DELAYS_SECONDS):
+            if delay_seconds:
+                time.sleep(delay_seconds)
+            response = active_session.get(
+                OPENREVIEW_PROFILES_URL,
+                params={"id": author_id},
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+            if response.status_code == 429 and attempt < len(OPENREVIEW_RETRY_DELAYS_SECONDS):
+                continue
+            response.raise_for_status()
+            break
         payload = response.json()
     except requests.RequestException as exc:
         print(f"[WARN] OpenReview profile request failed for {author_id}: {exc}")
@@ -289,17 +296,28 @@ def _fetch_openreview_notes_page(
     limit: int,
 ) -> list[dict[str, Any]]:
     """Fetch one OpenReview notes page."""
-    response = session.get(
-        OPENREVIEW_NOTES_URL,
-        params={
-            "invitation": invitation,
-            "details": "replyCount",
-            "offset": offset,
-            "limit": limit,
-        },
-        timeout=REQUEST_TIMEOUT_SECONDS,
-    )
-    response.raise_for_status()
+    params = {
+        "invitation": invitation,
+        "details": "replyCount",
+        "offset": offset,
+        "limit": limit,
+    }
+
+    for attempt, delay_seconds in enumerate([0] + OPENREVIEW_RETRY_DELAYS_SECONDS):
+        if delay_seconds:
+            print(f"[WARN] OpenReview rate limited at offset={offset}; retrying in {delay_seconds}s")
+            time.sleep(delay_seconds)
+
+        response = session.get(
+            OPENREVIEW_NOTES_URL,
+            params=params,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        if response.status_code == 429 and attempt < len(OPENREVIEW_RETRY_DELAYS_SECONDS):
+            continue
+        response.raise_for_status()
+        break
+
     return response.json().get("notes") or []
 
 
@@ -310,6 +328,7 @@ def fetch_openreview_papers(
     per_query: int = 50,
     max_pages: int = OPENREVIEW_MAX_PAGES,
     accepted_only: bool = True,
+    request_pause_seconds: float = 0.6,
 ) -> list[dict[str, Any]]:
     """Fetch paper-author rows directly from OpenReview notes.
 
@@ -417,6 +436,8 @@ def fetch_openreview_papers(
                             "source": "OpenReview",
                         }
                     )
+
+            time.sleep(request_pause_seconds)
 
     print(
         f"[INFO] OpenReview scanned {scanned_notes} notes, matched {matched_notes} papers, "
