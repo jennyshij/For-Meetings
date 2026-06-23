@@ -14,10 +14,8 @@ from typing import Any
 import requests
 
 from fetch_openreview import (
-    OPENREVIEW_PROFILES_URL,
     candidate_profile_ids,
     extract_openreview_profile_fields,
-    fetch_openreview_profile,
 )
 from sync_feishu import (
     FEISHU_RECORD_URL,
@@ -30,11 +28,13 @@ from sync_feishu import (
 
 CHECKPOINT_PATH = Path("enriched_record_ids.txt")
 OPENREVIEW_SEARCH_URL = "https://api2.openreview.net/profiles/search"
+OPENREVIEW_PROFILE_URL = "https://api2.openreview.net/profiles"
 OPENREVIEW_SLEEP_SECONDS = 2
 OPENREVIEW_RATE_LIMIT_SLEEP_SECONDS = 10
 OPENREVIEW_MAX_RETRIES = 3
 FEISHU_SLEEP_SECONDS = 0.5
 FEISHU_PAGE_SIZE = 100
+OPENREVIEW_SEARCH_DISABLED = False
 
 BACKFILL_FIELDS = [
     "institution",
@@ -136,21 +136,73 @@ def _name_score(author_name: str, profile: dict[str, Any]) -> int:
 
 def search_openreview_profile(session: requests.Session, author_name: str) -> dict[str, Any] | None:
     """Search OpenReview profile by author name, falling back to generated IDs."""
+    global OPENREVIEW_SEARCH_DISABLED
+
+    if not OPENREVIEW_SEARCH_DISABLED:
+        for attempt in range(1, OPENREVIEW_MAX_RETRIES + 1):
+            time.sleep(OPENREVIEW_SLEEP_SECONDS)
+            try:
+                response = session.get(
+                    OPENREVIEW_SEARCH_URL,
+                    params={"term": author_name, "limit": 3},
+                    timeout=15,
+                )
+            except requests.RequestException as exc:
+                print(f"[WARN] OpenReview profile search failed for {author_name}: {exc}")
+                break
+
+            if response.status_code == 429:
+                print(
+                    f"[WARN] OpenReview profile search rate limited for {author_name}; "
+                    f"attempt={attempt}/{OPENREVIEW_MAX_RETRIES}"
+                )
+                if attempt < OPENREVIEW_MAX_RETRIES:
+                    time.sleep(OPENREVIEW_RATE_LIMIT_SLEEP_SECONDS)
+                    continue
+
+            if response.status_code == 200:
+                profiles = response.json().get("profiles") or []
+                if profiles:
+                    best_profile = max(profiles, key=lambda profile: _name_score(author_name, profile))
+                    if _name_score(author_name, best_profile) > 0:
+                        return best_profile
+                break
+
+            if response.status_code == 403:
+                OPENREVIEW_SEARCH_DISABLED = True
+                print("[WARN] OpenReview profile search is forbidden for guest; disabling search fallback")
+            else:
+                print(
+                    f"[WARN] OpenReview profile search unavailable for {author_name}: "
+                    f"status={response.status_code}, body={response.text[:200]}"
+                )
+            break
+
+    for profile_id in candidate_profile_ids(author_name):
+        profile = fetch_profile_by_id(session, profile_id)
+        if profile and _name_score(author_name, profile) > 0:
+            return profile
+
+    return None
+
+
+def fetch_profile_by_id(session: requests.Session, profile_id: str) -> dict[str, Any] | None:
+    """Fetch one OpenReview profile with the requested pacing/backoff."""
     for attempt in range(1, OPENREVIEW_MAX_RETRIES + 1):
         time.sleep(OPENREVIEW_SLEEP_SECONDS)
         try:
             response = session.get(
-                OPENREVIEW_SEARCH_URL,
-                params={"term": author_name, "limit": 3},
+                OPENREVIEW_PROFILE_URL,
+                params={"id": profile_id},
                 timeout=15,
             )
         except requests.RequestException as exc:
-            print(f"[WARN] OpenReview profile search failed for {author_name}: {exc}")
-            break
+            print(f"[WARN] OpenReview profile request failed for {profile_id}: {exc}")
+            return None
 
         if response.status_code == 429:
             print(
-                f"[WARN] OpenReview profile search rate limited for {author_name}; "
+                f"[WARN] OpenReview profile request rate limited for {profile_id}; "
                 f"attempt={attempt}/{OPENREVIEW_MAX_RETRIES}"
             )
             if attempt < OPENREVIEW_MAX_RETRIES:
@@ -160,23 +212,14 @@ def search_openreview_profile(session: requests.Session, author_name: str) -> di
         if response.status_code == 200:
             profiles = response.json().get("profiles") or []
             if profiles:
-                best_profile = max(profiles, key=lambda profile: _name_score(author_name, profile))
-                if _name_score(author_name, best_profile) > 0:
-                    return best_profile
-            break
+                return profiles[0]
+            return None
 
         print(
-            f"[WARN] OpenReview profile search unavailable for {author_name}: "
+            f"[WARN] OpenReview profile request unavailable for {profile_id}: "
             f"status={response.status_code}, body={response.text[:200]}"
         )
-        break
-
-    for profile_id in candidate_profile_ids(author_name):
-        time.sleep(OPENREVIEW_SLEEP_SECONDS)
-        profile = fetch_openreview_profile(profile_id, session=session)
-        if profile and _name_score(author_name, profile) > 0:
-            return profile
-
+        return None
     return None
 
 
@@ -189,8 +232,7 @@ def profile_for_record(session: requests.Session, record: dict[str, Any]) -> dic
         or _stringify(fields.get("author_id"))
     )
     if author_id:
-        time.sleep(OPENREVIEW_SLEEP_SECONDS)
-        profile = fetch_openreview_profile(author_id, session=session)
+        profile = fetch_profile_by_id(session, author_id)
         if profile:
             return profile
 
