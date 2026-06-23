@@ -20,7 +20,8 @@ OPENREVIEW_INVITATIONS = {
     ("ICLR", 2026): "ICLR.cc/2026/Conference/-/Submission",
 }
 REQUEST_TIMEOUT_SECONDS = 10
-OPENREVIEW_RETRY_DELAYS_SECONDS = [2, 4, 8, 16]
+OPENREVIEW_NOTES_RETRY_DELAYS_SECONDS = [2, 4, 8, 16]
+OPENREVIEW_PROFILE_RETRY_DELAYS_SECONDS = [1]
 EMAIL_PATTERN = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?![\w.+-])")
 
 
@@ -91,15 +92,16 @@ def fetch_openreview_profile(
     owns_session = session is None
     active_session = session or requests.Session()
     try:
-        for attempt, delay_seconds in enumerate([0] + OPENREVIEW_RETRY_DELAYS_SECONDS):
+        for attempt, delay_seconds in enumerate([0] + OPENREVIEW_PROFILE_RETRY_DELAYS_SECONDS):
             if delay_seconds:
+                print(f"[WARN] OpenReview profile rate limited for {author_id}; retrying in {delay_seconds}s")
                 time.sleep(delay_seconds)
             response = active_session.get(
                 OPENREVIEW_PROFILES_URL,
                 params={"id": author_id},
                 timeout=REQUEST_TIMEOUT_SECONDS,
             )
-            if response.status_code == 429 and attempt < len(OPENREVIEW_RETRY_DELAYS_SECONDS):
+            if response.status_code == 429 and attempt < len(OPENREVIEW_PROFILE_RETRY_DELAYS_SECONDS):
                 continue
             response.raise_for_status()
             break
@@ -368,7 +370,10 @@ def enrich_rows_with_openreview(
     matched_count = 0
 
     with requests.Session() as session:
-        for row in rows:
+        for index, row in enumerate(rows, start=1):
+            if index == 1 or index % 50 == 0 or index == len(rows):
+                print(f"[INFO] OpenReview profile enrichment progress: {index}/{len(rows)} author rows")
+
             author_key = _clean_text(row.get("openreview_id") or row.get("author_name"))
             if not author_key:
                 continue
@@ -449,7 +454,7 @@ def _fetch_openreview_notes_page(
         "limit": limit,
     }
 
-    for attempt, delay_seconds in enumerate([0] + OPENREVIEW_RETRY_DELAYS_SECONDS):
+    for attempt, delay_seconds in enumerate([0] + OPENREVIEW_NOTES_RETRY_DELAYS_SECONDS):
         if delay_seconds:
             print(f"[WARN] OpenReview rate limited at offset={offset}; retrying in {delay_seconds}s")
             time.sleep(delay_seconds)
@@ -460,7 +465,7 @@ def _fetch_openreview_notes_page(
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
         print(f"[INFO] OpenReview API request: {response.url}")
-        if response.status_code == 429 and attempt < len(OPENREVIEW_RETRY_DELAYS_SECONDS):
+        if response.status_code == 429 and attempt < len(OPENREVIEW_NOTES_RETRY_DELAYS_SECONDS):
             continue
         response.raise_for_status()
         break
