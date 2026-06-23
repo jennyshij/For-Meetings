@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 import requests
 
@@ -39,12 +40,30 @@ def get_note() -> dict:
 
 def get_profile(author_id: str) -> dict:
     """Fetch an OpenReview profile by author id."""
-    response = requests.get(
-        f"{OPENREVIEW_API_URL}/profiles",
-        params={"id": author_id},
-        timeout=30,
-    )
-    response.raise_for_status()
+    response = None
+    for delay_seconds in [0, 5, 15, 30]:
+        if delay_seconds:
+            print(f"PROFILE_REQUEST_RETRY_AFTER_SECONDS: {delay_seconds}")
+            time.sleep(delay_seconds)
+        response = requests.get(
+            f"{OPENREVIEW_API_URL}/profiles",
+            params={"id": author_id},
+            timeout=30,
+        )
+        if response.status_code != 429:
+            break
+
+    if response is None:
+        return {}
+    if response.status_code != 200:
+        return {
+            "diagnostic_error": {
+                "status_code": response.status_code,
+                "url": response.url,
+                "text": response.text,
+            }
+        }
+
     payload = response.json()
     profiles = payload.get("profiles") or []
     return profiles[0] if profiles else payload
