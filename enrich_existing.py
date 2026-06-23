@@ -217,7 +217,7 @@ def build_patch_fields(record: dict[str, Any], profile_fields: dict[str, str]) -
     return patch_fields
 
 
-def patch_feishu_record(
+def update_feishu_record(
     session: requests.Session,
     token: str,
     app_token: str,
@@ -225,9 +225,13 @@ def patch_feishu_record(
     record_id: str,
     fields: dict[str, Any],
 ) -> bool:
-    """PATCH one Feishu record."""
+    """Update one Feishu record with only the requested fields.
+
+    The Feishu deployment used here returns 404 for PATCH /records/{record_id},
+    while PUT /records/{record_id} is supported and updates provided fields.
+    """
     url = FEISHU_RECORD_URL.format(app_token=app_token, table_id=table_id, record_id=record_id)
-    response = session.patch(
+    response = session.put(
         url,
         headers=_headers(token),
         json={"fields": fields},
@@ -236,7 +240,7 @@ def patch_feishu_record(
     response.raise_for_status()
     payload = response.json()
     if payload.get("code") != 0:
-        print(f"[ERROR] Feishu PATCH failed record_id={record_id}: {json.dumps(payload, ensure_ascii=False)}")
+        print(f"[ERROR] Feishu update failed record_id={record_id}: {json.dumps(payload, ensure_ascii=False)}")
         return False
     return True
 
@@ -274,10 +278,11 @@ def main() -> None:
             profile = profile_for_record(session, record)
             profile_fields = extract_openreview_profile_fields(profile) if profile else {}
             patch_fields = build_patch_fields(record, profile_fields)
+            processed_successfully = False
 
             if patch_fields:
                 try:
-                    if patch_feishu_record(
+                    if update_feishu_record(
                         session,
                         token,
                         settings["app_token"],
@@ -290,9 +295,12 @@ def main() -> None:
                             institution_filled_count += 1
                         if "career_history" in patch_fields:
                             career_filled_count += 1
+                        processed_successfully = True
                 except requests.RequestException as exc:
-                    print(f"[ERROR] Feishu PATCH request failed record_id={record_id}: {exc}")
+                    print(f"[ERROR] Feishu update request failed record_id={record_id}: {exc}")
                 time.sleep(FEISHU_SLEEP_SECONDS)
+            else:
+                processed_successfully = True
 
             current_fields = record.get("fields") or {}
             final_institution = _stringify(current_fields.get("institution")) or patch_fields.get("institution", "")
@@ -300,7 +308,8 @@ def main() -> None:
             if not final_institution or not final_career:
                 still_empty_count += 1
 
-            mark_processed(record_id)
+            if processed_successfully:
+                mark_processed(record_id)
 
             if processed_count % 10 == 0:
                 print(f"已处理 {processed_count}/{total_records}，成功补全 {updated_records_count} 条")
