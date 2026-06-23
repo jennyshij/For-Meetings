@@ -244,13 +244,20 @@ def fetch_openalex_papers(
                     "author_order": index,
                     "openalex_author_id": author.get("id", ""),
                     "institution": _institution_for_author(authorship),
+                    "institution_detail": "",
                     "education_history": "",
+                    "career_history": "",
                     "advisor": "",
                     "relations_conflicts": "",
                     "email": "",
+                    "email_domain": "",
+                    "email_source": "",
                     "homepage": "",
                     "linkedin": "",
                     "github": "",
+                    "gscholar": "",
+                    "dblp": "",
+                    "email_lookup_urls": "",
                 }
                 rows.append(row)
         else:
@@ -261,13 +268,20 @@ def fetch_openalex_papers(
                     "author_order": "",
                     "openalex_author_id": "",
                     "institution": "",
+                    "institution_detail": "",
                     "education_history": "",
+                    "career_history": "",
                     "advisor": "",
                     "relations_conflicts": "",
                     "email": "",
+                    "email_domain": "",
+                    "email_source": "",
                     "homepage": "",
                     "linkedin": "",
                     "github": "",
+                    "gscholar": "",
+                    "dblp": "",
+                    "email_lookup_urls": "",
                 }
             )
 

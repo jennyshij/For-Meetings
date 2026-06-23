@@ -42,11 +42,14 @@ The output CSV contains:
 - research_direction
 - author_name
 - institution
+- institution_detail
 - education_history
 - career_history
 - advisor
 - relations_conflicts
 - email
+- email_domain
+- email_source
 - homepage
 - linkedin
 - github

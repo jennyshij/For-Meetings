@@ -6,6 +6,7 @@ import argparse
 
 from config import CONFERENCES, KEYWORDS, OPENALEX_PER_QUERY, OUTPUT_CSV, YEARS
 from enrich_email import enrich_rows_with_homepage_emails
+from enrich_institution import enrich_rows_with_institution_details
 from export_csv import export_papers_authors_csv
 from fetch_openalex import fetch_openalex_papers
 from fetch_openreview import enrich_rows_with_openreview, fetch_openreview_papers
@@ -104,6 +105,7 @@ def main() -> None:
         rows = enrich_rows_with_openreview(rows)
     if args.enrich_email:
         rows = enrich_rows_with_homepage_emails(rows)
+    rows = enrich_rows_with_institution_details(rows)
 
     output_path = export_papers_authors_csv(rows, args.output)
     print(f"Exported {len(rows)} paper-author rows to {output_path}")
