@@ -126,6 +126,12 @@ Feishu sync with small data:
 python main.py --conference ICLR --year 2024 --keyword "Reinforcement Learning" --per-query 1 --sync-feishu
 ```
 
+Force-update existing Feishu rows by `paper_url + author_name`:
+
+```bash
+python main.py --conference ICLR --year 2026 --keyword "VLA" --source openreview --per-query 10 --sync-feishu --enrich-email --force-update
+```
+
 ## Configuration
 
 Edit `config.py` to change conferences, years, keywords, research-direction

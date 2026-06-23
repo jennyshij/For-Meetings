@@ -22,6 +22,7 @@ FEISHU_RECORDS_URL = (
     "https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
 )
 FEISHU_BATCH_CREATE_URL = FEISHU_RECORDS_URL + "/batch_create"
+FEISHU_RECORD_URL = FEISHU_RECORDS_URL + "/{record_id}"
 FEISHU_FIELDS_URL = (
     "https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/fields"
 )
@@ -140,15 +141,15 @@ def _dedupe_key(row: dict[str, Any]) -> tuple[str, str]:
     )
 
 
-def fetch_existing_keys(
+def fetch_existing_records(
     session: requests.Session,
     token: str,
     app_token: str,
     table_id: str,
-) -> set[tuple[str, str]]:
-    """Read existing Feishu records and collect paper_url + author_name keys."""
+) -> dict[tuple[str, str], str]:
+    """Read existing Feishu records and map paper_url + author_name to record_id."""
     url = FEISHU_RECORDS_URL.format(app_token=app_token, table_id=table_id)
-    existing_keys: set[tuple[str, str]] = set()
+    existing_records: dict[tuple[str, str], str] = {}
     page_token = ""
 
     while True:
@@ -175,8 +176,9 @@ def fetch_existing_keys(
                 _stringify_feishu_value(fields.get("paper_url")),
                 _stringify_feishu_value(fields.get("author_name")),
             )
-            if any(key):
-                existing_keys.add(key)
+            record_id = item.get("record_id") or item.get("id") or ""
+            if any(key) and record_id:
+                existing_records[key] = str(record_id)
 
         if not data.get("has_more"):
             break
@@ -184,7 +186,7 @@ def fetch_existing_keys(
         if not page_token:
             break
 
-    return existing_keys
+    return existing_records
 
 
 def fetch_table_field_names(
@@ -311,8 +313,50 @@ def batch_create_records(
     return success_count
 
 
-def sync_csv_to_feishu(csv_path: str, env_path: str = ".env") -> int:
-    """Sync new CSV rows into Feishu Bitable and return written row count."""
+def update_existing_records(
+    session: requests.Session,
+    token: str,
+    app_token: str,
+    table_id: str,
+    records: list[tuple[str, dict[str, dict[str, Any]]]],
+) -> int:
+    """Update existing Feishu records one by one; log failures and continue."""
+    success_count = 0
+
+    for index, (record_id, record) in enumerate(records, start=1):
+        url = FEISHU_RECORD_URL.format(
+            app_token=app_token,
+            table_id=table_id,
+            record_id=record_id,
+        )
+        try:
+            response = session.put(
+                url,
+                headers=_headers(token),
+                json=record,
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if payload.get("code") != 0:
+                print(f"[ERROR] Feishu update {index} failed record_id={record_id}: {payload}")
+            else:
+                success_count += 1
+                print(f"[INFO] Feishu update {index} updated record_id={record_id}")
+        except requests.RequestException as exc:
+            print(f"[ERROR] Feishu update {index} request failed record_id={record_id}: {exc}")
+
+        time.sleep(0.2)
+
+    return success_count
+
+
+def sync_csv_to_feishu(
+    csv_path: str,
+    env_path: str = ".env",
+    force_update: bool = False,
+) -> dict[str, int]:
+    """Sync CSV rows into Feishu Bitable and return create/update counts."""
     settings = load_feishu_settings(env_path)
     csv_records = read_csv_records(csv_path)
 
@@ -322,7 +366,7 @@ def sync_csv_to_feishu(csv_path: str, env_path: str = ".env") -> int:
             app_id=settings["app_id"],
             app_secret=settings["app_secret"],
         )
-        existing_keys = fetch_existing_keys(
+        existing_records = fetch_existing_records(
             session=session,
             token=token,
             app_token=settings["app_token"],
@@ -344,25 +388,48 @@ def sync_csv_to_feishu(csv_path: str, env_path: str = ".env") -> int:
             )
 
         records_to_create = []
+        records_to_update = []
         skipped_count = 0
         for row in csv_records:
-            if _dedupe_key(row) in existing_keys:
-                skipped_count += 1
+            key = _dedupe_key(row)
+            record = build_feishu_record(row, allowed_field_names=field_names)
+            existing_record_id = existing_records.get(key)
+            if existing_record_id:
+                if force_update:
+                    records_to_update.append((existing_record_id, record))
+                else:
+                    skipped_count += 1
                 continue
-            records_to_create.append(build_feishu_record(row, allowed_field_names=field_names))
+            records_to_create.append(record)
 
         print(
             f"[INFO] Feishu sync loaded {len(csv_records)} CSV rows, "
-            f"skipped {skipped_count} existing rows, writing {len(records_to_create)} new rows"
+            f"skipped {skipped_count} existing rows, "
+            f"creating {len(records_to_create)} new rows, "
+            f"updating {len(records_to_update)} existing rows"
         )
 
-        if not records_to_create:
-            return 0
+        created_count = 0
+        updated_count = 0
+        if records_to_create:
+            created_count = batch_create_records(
+                session=session,
+                token=token,
+                app_token=settings["app_token"],
+                table_id=settings["table_id"],
+                records=records_to_create,
+            )
+        if records_to_update:
+            updated_count = update_existing_records(
+                session=session,
+                token=token,
+                app_token=settings["app_token"],
+                table_id=settings["table_id"],
+                records=records_to_update,
+            )
 
-        return batch_create_records(
-            session=session,
-            token=token,
-            app_token=settings["app_token"],
-            table_id=settings["table_id"],
-            records=records_to_create,
-        )
+        return {
+            "created": created_count,
+            "updated": updated_count,
+            "skipped": skipped_count,
+        }

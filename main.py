@@ -59,6 +59,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Fetch author homepages and extract emails before CSV export.",
     )
+    parser.add_argument(
+        "--force-update",
+        action="store_true",
+        help="When syncing Feishu, update existing rows instead of skipping them.",
+    )
     return parser.parse_args()
 
 
@@ -105,8 +110,13 @@ def main() -> None:
 
     if args.sync_feishu:
         try:
-            written_count = sync_csv_to_feishu(str(output_path))
-            print(f"Feishu sync completed, wrote {written_count} new rows")
+            sync_result = sync_csv_to_feishu(str(output_path), force_update=args.force_update)
+            print(
+                "Feishu sync completed, "
+                f"created {sync_result['created']} rows, "
+                f"updated {sync_result['updated']} rows, "
+                f"skipped {sync_result['skipped']} rows"
+            )
         except Exception as exc:
             print(f"[ERROR] Feishu sync failed: {exc}")
 
