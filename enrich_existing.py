@@ -30,7 +30,7 @@ CHECKPOINT_PATH = Path("enriched_record_ids.txt")
 OPENREVIEW_SEARCH_URL = "https://api2.openreview.net/profiles/search"
 OPENREVIEW_PROFILE_URL = "https://api2.openreview.net/profiles"
 OPENREVIEW_NOTES_URL = "https://api2.openreview.net/notes"
-OPENREVIEW_SLEEP_SECONDS = 2
+OPENREVIEW_SLEEP_SECONDS = 4
 OPENREVIEW_RATE_LIMIT_SLEEP_SECONDS = 10
 OPENREVIEW_MAX_RETRIES = 3
 FEISHU_SLEEP_SECONDS = 0.5
@@ -327,8 +327,7 @@ def profile_for_record(session: requests.Session, record: dict[str, Any]) -> dic
 
     if author_id:
         profile = fetch_profile_by_id(session, author_id)
-        if profile:
-            return profile
+        return profile
 
     author_name = _stringify(fields.get("author_name"))
     if not author_name:
@@ -436,7 +435,7 @@ def main() -> None:
                     print(f"[ERROR] Feishu update request failed record_id={record_id}: {exc}")
                 time.sleep(FEISHU_SLEEP_SECONDS)
             else:
-                processed_successfully = True
+                processed_successfully = bool(profile)
 
             current_fields = record.get("fields") or {}
             final_institution = _stringify(current_fields.get("institution")) or patch_fields.get("institution", "")
