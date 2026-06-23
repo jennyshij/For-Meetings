@@ -228,11 +228,68 @@ def _profile_lookup_urls(content: dict[str, Any]) -> str:
     return "; ".join(dict.fromkeys(urls))
 
 
+def _history_entry_sort_key(entry: dict[str, Any]) -> tuple[int, int]:
+    """Sort history entries with current entries first, then latest year."""
+    end = entry.get("end")
+    start = entry.get("start")
+    is_current = 1 if end in [None, "", 0] else 0
+    year = start if is_current else end
+    try:
+        sortable_year = int(year)
+    except (TypeError, ValueError):
+        sortable_year = 0
+    return (is_current, sortable_year)
+
+
+def _latest_history_entry(history: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return the latest OpenReview history entry."""
+    if not history:
+        return {}
+    return max(history, key=_history_entry_sort_key)
+
+
+def _format_institution_detail(entry: dict[str, Any]) -> str:
+    """Format latest history entry as a compact institution detail string."""
+    institution = entry.get("institution") if isinstance(entry.get("institution"), dict) else {}
+    parts = [
+        _clean_text(entry.get("position") or entry.get("degree")),
+        _clean_text(institution.get("name")),
+        _clean_text(institution.get("stateProvince")),
+        _clean_text(institution.get("country")),
+    ]
+    return ", ".join(dict.fromkeys(part for part in parts if part))
+
+
+def _institution_domain(entry: dict[str, Any]) -> str:
+    """Read institution.domain from a history entry."""
+    institution = entry.get("institution")
+    if not isinstance(institution, dict):
+        return ""
+    return _clean_text(institution.get("domain"))
+
+
+def _extract_expertise(content: dict[str, Any]) -> str:
+    """Flatten OpenReview expertise keywords into a pipe-separated string."""
+    expertise_terms: list[str] = []
+    for entry in content.get("expertise") or []:
+        if isinstance(entry, dict):
+            for keyword in _as_list(entry.get("keywords")):
+                keyword_text = _clean_text(keyword)
+                if keyword_text:
+                    expertise_terms.append(keyword_text)
+        else:
+            entry_text = _clean_text(entry)
+            if entry_text:
+                expertise_terms.append(entry_text)
+    return " | ".join(dict.fromkeys(expertise_terms))
+
+
 def extract_openreview_profile_fields(profile: dict[str, Any]) -> dict[str, str]:
     """Extract normalized fields needed by the recruiting mapping CSV."""
     content = profile.get("content") or {}
     history = content.get("history") or []
     relations = content.get("relations") or []
+    latest_entry = _latest_history_entry(history)
 
     current_entries = [entry for entry in history if _is_current_history_entry(entry)]
     current_titles = [
@@ -274,8 +331,11 @@ def extract_openreview_profile_fields(profile: dict[str, Any]) -> dict[str, str]
     return {
         "openreview_title": "; ".join(dict.fromkeys(current_titles)),
         "openreview_institution": "; ".join(dict.fromkeys(current_affiliations or current_institutions)),
+        "institution_detail": _format_institution_detail(latest_entry),
+        "institution_domain": _institution_domain(latest_entry),
         "education_history": " | ".join(dict.fromkeys(filter(None, education_history))),
         "career_history": " | ".join(dict.fromkeys(filter(None, career_history))),
+        "expertise": _extract_expertise(content),
         "advisor": "; ".join(dict.fromkeys(filter(None, advisor_relations))),
         "relations_conflicts": "; ".join(dict.fromkeys(filter(None, relation_summaries))),
         "email": _extract_public_email(content),
@@ -337,8 +397,11 @@ def enrich_rows_with_openreview(
             matched_count += 1
             row["institution"] = _merge_institution_with_openreview(row, profile_fields)
             for field in [
+                "institution_detail",
+                "institution_domain",
                 "education_history",
                 "career_history",
+                "expertise",
                 "advisor",
                 "relations_conflicts",
                 "email",
@@ -485,8 +548,10 @@ def fetch_openreview_papers(
                             "openreview_id": "",
                             "institution": "",
                             "institution_detail": "",
+                            "institution_domain": "",
                             "education_history": "",
                             "career_history": "",
+                            "expertise": "",
                             "advisor": "",
                             "relations_conflicts": "",
                             "email": "",
@@ -517,8 +582,10 @@ def fetch_openreview_papers(
                             "openreview_id": authorids[index] if index < len(authorids) else "",
                             "institution": _author_affiliation_for_index(author_affiliations, index),
                             "institution_detail": "",
+                            "institution_domain": "",
                             "education_history": "",
                             "career_history": "",
+                            "expertise": "",
                             "advisor": "",
                             "relations_conflicts": "",
                             "email": "",

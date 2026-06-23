@@ -1,24 +1,9 @@
-"""Enrich institution detail and inferred email domains."""
+"""Enrich inferred email domains from OpenReview institution metadata."""
 
 from __future__ import annotations
 
-import html
 import re
-import time
 from typing import Any
-
-import requests
-
-
-GOOGLE_SCHOLAR_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    )
-}
-GOOGLE_SCHOLAR_TIMEOUT_SECONDS = 8
-GOOGLE_SCHOLAR_PAUSE_SECONDS = 2
 
 
 INSTITUTION_EMAIL_DOMAINS = {
@@ -108,49 +93,6 @@ INSTITUTION_EMAIL_DOMAINS = {
 }
 
 
-def _strip_html(value: str) -> str:
-    """Remove HTML tags and normalize whitespace."""
-    text = re.sub(r"<[^>]+>", " ", value or "")
-    return " ".join(html.unescape(text).split())
-
-
-def extract_google_scholar_affiliation(page_html: str) -> str:
-    """Extract the affiliation text displayed under the scholar's name."""
-    matches = re.findall(r'<div class="gsc_prf_il">(.*?)</div>', page_html or "", flags=re.S)
-    for match in matches:
-        affiliation = _strip_html(match)
-        if affiliation and "@" not in affiliation and "Verified email" not in affiliation:
-            return affiliation
-    return ""
-
-
-def fetch_google_scholar_institution_detail(gscholar_url: str) -> str:
-    """Fetch a Google Scholar profile and parse its affiliation text."""
-    if not gscholar_url:
-        return ""
-
-    try:
-        response = requests.get(
-            gscholar_url,
-            headers=GOOGLE_SCHOLAR_HEADERS,
-            timeout=GOOGLE_SCHOLAR_TIMEOUT_SECONDS,
-        )
-        if response.status_code == 403:
-            print(f"[WARN] Google Scholar blocked request with 403 url={gscholar_url}")
-            return ""
-        response.raise_for_status()
-    except requests.RequestException as exc:
-        print(f"[WARN] Google Scholar institution lookup failed url={gscholar_url}: {exc}")
-        return ""
-
-    institution_detail = extract_google_scholar_affiliation(response.text)
-    if institution_detail:
-        print(f"[INFO] Google Scholar institution detail found url={gscholar_url}: {institution_detail}")
-    else:
-        print(f"[WARN] Google Scholar institution detail not found url={gscholar_url}")
-    return institution_detail
-
-
 def _term_matches(text: str, term: str) -> bool:
     """Case-insensitive fuzzy institution matching."""
     if not text or not term:
@@ -178,30 +120,27 @@ def infer_email_domain_from_institution(institution_text: str) -> str:
     return ""
 
 
+def _format_email_domain(domain: str) -> str:
+    """Normalize a raw institution domain into the email_domain display format."""
+    domain = str(domain or "").strip().lstrip("@")
+    return f"@{domain}" if domain else ""
+
+
 def enrich_rows_with_institution_details(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Fill institution_detail and inferred email domains for author rows."""
-    scholar_cache: dict[str, str] = {}
+    """Fill inferred email domains for author rows."""
     institution_detail_count = 0
     email_domain_count = 0
     unmatched_rows: list[dict[str, str]] = []
 
     for row in rows:
-        gscholar_url = str(row.get("gscholar", "") or "").strip()
-        if gscholar_url and gscholar_url not in scholar_cache:
-            scholar_cache[gscholar_url] = fetch_google_scholar_institution_detail(gscholar_url)
-            time.sleep(GOOGLE_SCHOLAR_PAUSE_SECONDS)
-
-        institution_detail = scholar_cache.get(gscholar_url, "")
-        if institution_detail and not row.get("institution_detail"):
-            row["institution_detail"] = institution_detail
-
         if row.get("institution_detail"):
             institution_detail_count += 1
 
-        # Do not infer a domain when a real email is already present.
-        if row.get("email"):
-            row["email_domain"] = ""
-            row["email_source"] = ""
+        institution_domain = _format_email_domain(row.get("institution_domain", ""))
+        if institution_domain:
+            row["email_domain"] = institution_domain
+            row["email_source"] = "openreview_institution_domain"
+            email_domain_count += 1
             continue
 
         institution_text = " ".join(

@@ -43,8 +43,10 @@ The output CSV contains:
 - author_name
 - institution
 - institution_detail
+- institution_domain
 - education_history
 - career_history
+- expertise
 - advisor
 - relations_conflicts
 - email
