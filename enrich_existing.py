@@ -29,6 +29,7 @@ from sync_feishu import (
 CHECKPOINT_PATH = Path("enriched_record_ids.txt")
 OPENREVIEW_SEARCH_URL = "https://api2.openreview.net/profiles/search"
 OPENREVIEW_PROFILE_URL = "https://api2.openreview.net/profiles"
+OPENREVIEW_NOTES_URL = "https://api2.openreview.net/notes"
 OPENREVIEW_SLEEP_SECONDS = 2
 OPENREVIEW_RATE_LIMIT_SLEEP_SECONDS = 10
 OPENREVIEW_MAX_RETRIES = 3
@@ -134,6 +135,86 @@ def _name_score(author_name: str, profile: dict[str, Any]) -> int:
     return score
 
 
+def _normalize_name(name: str) -> str:
+    """Normalize names for note author matching."""
+    return " ".join(str(name or "").lower().replace("-", " ").split())
+
+
+def _content_value(content: dict[str, Any], key: str, default: Any = "") -> Any:
+    """Read OpenReview note content fields wrapped as {value: ...}."""
+    value = content.get(key, default)
+    if isinstance(value, dict) and "value" in value:
+        return value.get("value", default)
+    return value
+
+
+def _note_id_from_paper_url(paper_url: str) -> str:
+    """Extract OpenReview forum id from paper_url."""
+    if "openreview.net/forum?id=" not in paper_url:
+        return ""
+    return paper_url.split("openreview.net/forum?id=", 1)[-1].split("&", 1)[0].strip()
+
+
+def fetch_note_authorids(
+    session: requests.Session,
+    note_id: str,
+    note_cache: dict[str, dict[str, str]],
+) -> dict[str, str]:
+    """Fetch one OpenReview note and map normalized author names to authorids."""
+    if not note_id:
+        return {}
+    if note_id in note_cache:
+        return note_cache[note_id]
+
+    for attempt in range(1, OPENREVIEW_MAX_RETRIES + 1):
+        time.sleep(OPENREVIEW_SLEEP_SECONDS)
+        try:
+            response = session.get(
+                OPENREVIEW_NOTES_URL,
+                params={"id": note_id},
+                timeout=15,
+            )
+        except requests.RequestException as exc:
+            print(f"[WARN] OpenReview note request failed for {note_id}: {exc}")
+            note_cache[note_id] = {}
+            return {}
+
+        if response.status_code == 429:
+            print(
+                f"[WARN] OpenReview note request rate limited for {note_id}; "
+                f"attempt={attempt}/{OPENREVIEW_MAX_RETRIES}"
+            )
+            if attempt < OPENREVIEW_MAX_RETRIES:
+                time.sleep(OPENREVIEW_RATE_LIMIT_SLEEP_SECONDS)
+                continue
+
+        if response.status_code != 200:
+            print(
+                f"[WARN] OpenReview note request unavailable for {note_id}: "
+                f"status={response.status_code}, body={response.text[:200]}"
+            )
+            note_cache[note_id] = {}
+            return {}
+
+        notes = response.json().get("notes") or []
+        if not notes:
+            note_cache[note_id] = {}
+            return {}
+
+        content = notes[0].get("content") or {}
+        authors = _content_value(content, "authors", []) or []
+        authorids = _content_value(content, "authorids", []) or []
+        mapping = {}
+        for index, author_name in enumerate(authors):
+            if index < len(authorids):
+                mapping[_normalize_name(author_name)] = str(authorids[index])
+        note_cache[note_id] = mapping
+        return mapping
+
+    note_cache[note_id] = {}
+    return {}
+
+
 def search_openreview_profile(session: requests.Session, author_name: str) -> dict[str, Any] | None:
     """Search OpenReview profile by author name, falling back to generated IDs."""
     global OPENREVIEW_SEARCH_DISABLED
@@ -225,12 +306,25 @@ def fetch_profile_by_id(session: requests.Session, profile_id: str) -> dict[str,
 
 def profile_for_record(session: requests.Session, record: dict[str, Any]) -> dict[str, Any] | None:
     """Find the best OpenReview profile for one Feishu record."""
+    if not hasattr(profile_for_record, "_note_cache"):
+        profile_for_record._note_cache = {}  # type: ignore[attr-defined]
+
     fields = record.get("fields") or {}
     author_id = (
         _stringify(fields.get("openreview_id"))
         or _stringify(fields.get("authorid"))
         or _stringify(fields.get("author_id"))
     )
+    if not author_id:
+        paper_url = _stringify(fields.get("paper_url"))
+        note_id = _note_id_from_paper_url(paper_url)
+        note_authorids = fetch_note_authorids(
+            session,
+            note_id,
+            profile_for_record._note_cache,  # type: ignore[attr-defined]
+        )
+        author_id = note_authorids.get(_normalize_name(_stringify(fields.get("author_name"))), "")
+
     if author_id:
         profile = fetch_profile_by_id(session, author_id)
         if profile:
