@@ -645,6 +645,7 @@ def fetch_openreview_papers(
     per_query: int = 50,
     accepted_only: bool = True,
     request_pause_seconds: float = 0.6,
+    paper_query: str | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch paper-author rows directly from OpenReview notes.
 
@@ -669,6 +670,8 @@ def fetch_openreview_papers(
     print(f"[INFO] OpenReview requested per-query: {per_query}")
     print(f"[INFO] OpenReview effective page limit: {page_limit}")
     print(f"[INFO] OpenReview keyword variants: {', '.join(_keyword_variants(keywords))}")
+    if paper_query:
+        print(f"[INFO] OpenReview paper title filter: {paper_query}")
 
     with requests.Session() as session:
         offset = 0
@@ -701,6 +704,9 @@ def fetch_openreview_papers(
                 content = note.get("content") or {}
                 title = _clean_text(_content_value(content, "title"))
                 abstract = _clean_text(_content_value(content, "abstract"))
+                if paper_query and paper_query.lower() not in title.lower():
+                    continue
+
                 matched = _match_openreview_keywords(title, abstract, keywords)
                 if not matched:
                     continue

@@ -8,6 +8,7 @@ Phase 5 keeps the integration small and explicit:
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -154,6 +155,7 @@ def fetch_existing_records(
     """Read existing Feishu records and map paper_url + author_name to record_id."""
     url = FEISHU_RECORDS_URL.format(app_token=app_token, table_id=table_id)
     existing_records: dict[tuple[str, str], str] = {}
+    total_records = 0
     page_token = ""
 
     while True:
@@ -175,6 +177,7 @@ def fetch_existing_records(
 
         data = payload.get("data") or {}
         for item in data.get("items") or []:
+            total_records += 1
             fields = item.get("fields") or {}
             key = (
                 _stringify_feishu_value(fields.get("paper_url")),
@@ -190,6 +193,7 @@ def fetch_existing_records(
         if not page_token:
             break
 
+    print(f"[INFO] Current Feishu table record count: {total_records}")
     return existing_records
 
 
@@ -295,15 +299,20 @@ def batch_create_records(
     success_count = 0
 
     for batch_index, batch in enumerate(_chunked(records, BATCH_SIZE), start=1):
+        request_body = {"records": batch}
+        print(f"[DEBUG] Feishu batch_create {batch_index} request body:")
+        print(json.dumps(request_body, ensure_ascii=False, indent=2))
         try:
             response = session.post(
                 url,
                 headers=_headers(token),
-                json={"records": batch},
+                json=request_body,
                 timeout=REQUEST_TIMEOUT_SECONDS,
             )
             response.raise_for_status()
             payload = response.json()
+            print(f"[DEBUG] Feishu batch_create {batch_index} response:")
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
             if payload.get("code") != 0:
                 print(f"[ERROR] Feishu batch {batch_index} failed: {payload}")
             else:
@@ -333,6 +342,8 @@ def update_existing_records(
             table_id=table_id,
             record_id=record_id,
         )
+        print(f"[DEBUG] Feishu update {index} request body record_id={record_id}:")
+        print(json.dumps(record, ensure_ascii=False, indent=2))
         try:
             response = session.put(
                 url,
@@ -342,6 +353,8 @@ def update_existing_records(
             )
             response.raise_for_status()
             payload = response.json()
+            print(f"[DEBUG] Feishu update {index} response record_id={record_id}:")
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
             if payload.get("code") != 0:
                 print(f"[ERROR] Feishu update {index} failed record_id={record_id}: {payload}")
             else:
@@ -406,6 +419,10 @@ def sync_csv_to_feishu(
                 continue
             records_to_create.append(record)
 
+        print("[DEBUG] Feishu records prepared for create:")
+        print(json.dumps(records_to_create, ensure_ascii=False, indent=2))
+        print("[DEBUG] Feishu records prepared for update:")
+        print(json.dumps(records_to_update, ensure_ascii=False, indent=2))
         print(
             f"[INFO] Feishu sync loaded {len(csv_records)} CSV rows, "
             f"skipped {skipped_count} existing rows, "

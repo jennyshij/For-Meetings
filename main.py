@@ -52,6 +52,10 @@ def parse_args() -> argparse.Namespace:
         help="Paper metadata source. Use openreview for direct ICLR 2026 fetching.",
     )
     parser.add_argument(
+        "--paper",
+        help="Filter OpenReview direct fetch to paper titles containing this text.",
+    )
+    parser.add_argument(
         "--sync-feishu",
         action="store_true",
         help="Sync the exported CSV rows to Feishu Bitable after CSV export.",
@@ -96,6 +100,7 @@ def main() -> None:
             year=year,
             keywords=keywords,
             per_query=args.per_query,
+            paper_query=args.paper,
         )
     else:
         print(
