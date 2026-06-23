@@ -6,6 +6,7 @@ import argparse
 
 from config import CONFERENCES, KEYWORDS, OPENALEX_PER_QUERY, OUTPUT_CSV, YEARS
 from enrich_email import enrich_rows_with_homepage_emails
+from enrich_homepage import enrich_rows_with_homepage_claude
 from enrich_institution import enrich_rows_with_institution_details
 from export_csv import export_papers_authors_csv
 from fetch_openalex import fetch_openalex_papers
@@ -65,6 +66,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="When syncing Feishu, update existing rows instead of skipping them.",
     )
+    parser.add_argument(
+        "--enrich-homepage",
+        action="store_true",
+        help="Use homepage text plus Claude API to fill missing institution fields.",
+    )
     return parser.parse_args()
 
 
@@ -105,6 +111,8 @@ def main() -> None:
         rows = enrich_rows_with_openreview(rows)
     if args.enrich_email:
         rows = enrich_rows_with_homepage_emails(rows)
+    if args.enrich_homepage:
+        rows = enrich_rows_with_homepage_claude(rows)
     rows = enrich_rows_with_institution_details(rows)
 
     output_path = export_papers_authors_csv(rows, args.output)

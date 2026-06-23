@@ -163,7 +163,7 @@ def _format_education_history_entry(entry: dict[str, Any]) -> str:
 
 def _format_career_history_entry(entry: dict[str, Any]) -> str:
     """Format one career/employment history entry."""
-    position = _clean_text(entry.get("position"))
+    position = _clean_text(entry.get("position") or entry.get("degree"))
     institution = _clean_text(entry.get("institution"))
     years = _format_year_range(entry)
     parts = [part for part in [position, institution, years] if part]
@@ -242,11 +242,29 @@ def _history_entry_sort_key(entry: dict[str, Any]) -> tuple[int, int]:
     return (is_current, sortable_year)
 
 
+def _current_history_entry(history: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return the latest current history entry where end is empty."""
+    current_entries = [entry for entry in history if _is_current_history_entry(entry)]
+    if not current_entries:
+        return {}
+    return max(current_entries, key=_history_entry_sort_key)
+
+
 def _latest_history_entry(history: list[dict[str, Any]]) -> dict[str, Any]:
     """Return the latest OpenReview history entry."""
     if not history:
         return {}
     return max(history, key=_history_entry_sort_key)
+
+
+def _format_current_institution(entry: dict[str, Any]) -> str:
+    """Format the primary institution field from the latest current history entry."""
+    institution = entry.get("institution") if isinstance(entry.get("institution"), dict) else {}
+    parts = [
+        _clean_text(entry.get("position") or entry.get("degree")),
+        _clean_text(institution.get("name")),
+    ]
+    return ", ".join(part for part in parts if part)
 
 
 def _format_institution_detail(entry: dict[str, Any]) -> str:
@@ -290,48 +308,29 @@ def extract_openreview_profile_fields(profile: dict[str, Any]) -> dict[str, str]
     content = profile.get("content") or {}
     history = content.get("history") or []
     relations = content.get("relations") or []
+    current_entry = _current_history_entry(history)
     latest_entry = _latest_history_entry(history)
-
-    current_entries = [entry for entry in history if _is_current_history_entry(entry)]
-    current_titles = [
-        _clean_text(entry.get("position")) for entry in current_entries if _clean_text(entry.get("position"))
-    ]
-    current_institutions = [
-        _clean_text(entry.get("institution"))
-        for entry in current_entries
-        if _clean_text(entry.get("institution"))
-    ]
-    current_affiliations = []
-    for entry in current_entries:
-        title = _clean_text(entry.get("position"))
-        institution = _clean_text(entry.get("institution"))
-        if institution and title:
-            current_affiliations.append(f"{institution} ({title})")
-        elif institution or title:
-            current_affiliations.append(institution or title)
 
     education_history = []
     career_history = []
-    for entry in history:
-        if _is_education_history_entry(entry):
+    for entry in sorted(history, key=_history_entry_sort_key, reverse=True):
+        if entry.get("degree"):
             education_history.append(_format_education_history_entry(entry))
-        elif _is_career_history_entry(entry):
-            career_history.append(_format_career_history_entry(entry))
+        career_history.append(_format_career_history_entry(entry))
 
     advisor_relations = []
     relation_summaries = []
     for relation in relations:
         relation_type = _clean_text(relation.get("relation"))
         relation_name = _clean_text(relation.get("name") or relation.get("username"))
-        if relation_type or relation_name:
-            relation_summaries.append(": ".join(part for part in [relation_type, relation_name] if part))
         relation_type_lower = relation_type.lower()
         if "advisor" in relation_type_lower and "advisee" not in relation_type_lower:
             advisor_relations.append(relation_name)
+        elif relation_type or relation_name:
+            relation_summaries.append(": ".join(part for part in [relation_type, relation_name] if part))
 
     return {
-        "openreview_title": "; ".join(dict.fromkeys(current_titles)),
-        "openreview_institution": "; ".join(dict.fromkeys(current_affiliations or current_institutions)),
+        "openreview_institution": _format_current_institution(current_entry),
         "institution_detail": _format_institution_detail(latest_entry),
         "institution_domain": _institution_domain(latest_entry),
         "education_history": " | ".join(dict.fromkeys(filter(None, education_history))),
@@ -350,15 +349,11 @@ def extract_openreview_profile_fields(profile: dict[str, Any]) -> dict[str, str]
 
 
 def _merge_institution_with_openreview(row: dict[str, Any], profile_fields: dict[str, str]) -> str:
-    """Append OpenReview current title/institution to the CSV institution field."""
-    existing_institution = _clean_text(row.get("institution"))
+    """Prefer OpenReview current history institution, falling back to note data."""
     openreview_institution = profile_fields.get("openreview_institution", "")
-    openreview_title = profile_fields.get("openreview_title", "")
-
-    openreview_label = openreview_institution or openreview_title
-
-    parts = [part for part in [existing_institution, openreview_label] if part]
-    return "; ".join(dict.fromkeys(parts))
+    if openreview_institution:
+        return openreview_institution
+    return _clean_text(row.get("institution"))
 
 
 def enrich_rows_with_openreview(
@@ -438,6 +433,13 @@ def _author_affiliation_for_index(author_affiliations: list[Any], index: int) ->
     if index >= len(author_affiliations):
         return ""
     return _clean_text(author_affiliations[index])
+
+
+def _institution_from_author_id(author_id: str) -> str:
+    """Fallback institution text when OpenReview authorid is an email address."""
+    if "@" not in author_id:
+        return ""
+    return author_id.rsplit("@", 1)[-1].strip()
 
 
 def _fetch_openreview_notes_page(
@@ -524,7 +526,10 @@ def fetch_openreview_papers(
         print(f"[WARN] OpenReview direct fetch is not configured for {conference} {year}")
         return []
 
-    page_limit = max(1, min(per_query, 1000))
+    # OpenReview supports up to 1000 notes per request. Always use the maximum
+    # for direct conference scans so small --per-query values do not truncate or
+    # slow down the full scan.
+    page_limit = 1000
     rows: list[dict[str, Any]] = []
     scanned_notes = 0
     accepted_scanned_notes = 0
@@ -615,6 +620,9 @@ def fetch_openreview_papers(
                     continue
 
                 for index, author_name in enumerate(authors):
+                    author_id = authorids[index] if index < len(authorids) else ""
+                    note_institution = _author_affiliation_for_index(author_affiliations, index)
+                    fallback_institution = note_institution or _institution_from_author_id(author_id)
                     rows.append(
                         {
                             "paper_title": title,
@@ -624,10 +632,10 @@ def fetch_openreview_papers(
                             "authors": authors_joined,
                             "research_direction": research_direction,
                             "author_name": author_name,
-                            "openreview_id": authorids[index] if index < len(authorids) else "",
-                            "institution": _author_affiliation_for_index(author_affiliations, index),
+                            "openreview_id": author_id,
+                            "institution": fallback_institution,
                             "institution_detail": "",
-                            "institution_domain": "",
+                            "institution_domain": _institution_from_author_id(author_id),
                             "education_history": "",
                             "career_history": "",
                             "expertise": "",
