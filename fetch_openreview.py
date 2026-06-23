@@ -287,7 +287,7 @@ def _format_history_entry(entry: dict[str, Any]) -> str:
     position = _clean_text(entry.get("position") or entry.get("degree"))
     years = _format_year_range(entry)
     parts = [position, *_history_institution_parts(entry), years]
-    return ", ".join(parts)
+    return ", ".join(part for part in parts if part)
 
 
 def _is_current_history_entry(entry: dict[str, Any]) -> bool:
