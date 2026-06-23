@@ -9,21 +9,19 @@ import pandas as pd
 
 
 CSV_COLUMNS = [
-    "conference",
-    "year",
     "paper_title",
+    "year",
     "paper_url",
-    "abstract",
-    "authors",
-    "author_name",
-    "author_order",
-    "institution",
-    "matched_org",
-    "org_type",
-    "email",
-    "matched_keywords",
     "research_direction",
-    "source",
+    "author_name",
+    "institution",
+    "education_history",
+    "advisor",
+    "relations_conflicts",
+    "email",
+    "homepage",
+    "linkedin",
+    "github",
 ]
 
 

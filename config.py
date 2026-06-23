@@ -24,8 +24,8 @@ CONFERENCES = [
 ]
 
 
-# Target publication years.
-YEARS = [2023, 2024, 2025]
+# Target publication years. Keep 2026 first, with 2025/2024 as fallbacks.
+YEARS = [2026, 2025, 2024]
 
 
 # Keywords used to find relevant papers and authors.
@@ -38,6 +38,8 @@ KEYWORDS = [
     "VIMA",
     "Robot Learning",
     "Embodied AI",
+    "Embodied Agent",
+    "Robot Foundation Model",
     "World Model",
     "Diffusion Policy",
     "Imitation Learning",
@@ -45,9 +47,18 @@ KEYWORDS = [
     "PPO",
     "SAC",
     "DAgger",
+    "RLHF",
+    "GRPO",
+    "Reward Model",
+    "LLM Reasoning",
+    "Test Time Compute",
+    "Inference Scaling",
     "Humanoid Robot",
     "Motion Planning",
     "Whole Body Control",
+    "Loco-manipulation",
+    "Dexterous Hand",
+    "Tactile Sensing",
     "Synthetic Data",
     "Data Engine",
 ]
@@ -63,6 +74,8 @@ RESEARCH_DIRECTIONS = {
         "RT-2",
         "VIMA",
         "Embodied AI",
+        "Embodied Agent",
+        "Robot Foundation Model",
     ],
     "Robot Learning": [
         "Robot Learning",
@@ -72,16 +85,27 @@ RESEARCH_DIRECTIONS = {
         "PPO",
         "SAC",
         "DAgger",
+        "RLHF",
+        "GRPO",
+        "Reward Model",
     ],
     "Planning and Control": [
         "Humanoid Robot",
         "Motion Planning",
         "Whole Body Control",
+        "Loco-manipulation",
+        "Dexterous Hand",
+        "Tactile Sensing",
     ],
     "World Models and Data": [
         "World Model",
         "Synthetic Data",
         "Data Engine",
+    ],
+    "LLM Reasoning and Scaling": [
+        "LLM Reasoning",
+        "Test Time Compute",
+        "Inference Scaling",
     ],
 }
 

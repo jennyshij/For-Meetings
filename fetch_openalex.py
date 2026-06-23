@@ -8,7 +8,12 @@ from typing import Any
 import requests
 
 from classifier import classify_research_direction, match_keywords
-from config import CONFERENCE_EVIDENCE_TERMS, OPENALEX_MAILTO, OPENALEX_PER_QUERY, OPENALEX_SOURCE_IDS
+from config import (
+    CONFERENCE_EVIDENCE_TERMS,
+    OPENALEX_MAILTO,
+    OPENALEX_PER_QUERY,
+    OPENALEX_SOURCE_IDS,
+)
 
 
 OPENALEX_WORKS_URL = "https://api.openalex.org/works"
@@ -229,16 +234,41 @@ def fetch_openalex_papers(
         paper["research_direction"] = "; ".join(sorted(paper["research_direction"]))
 
         if authorships:
+            # OpenAlex returns one authorship object per collaborator. Do not
+            # slice this list: every co-author becomes a separate CSV row.
             for index, authorship in enumerate(authorships, start=1):
                 author = authorship.get("author") or {}
                 row = {
                     **paper,
                     "author_name": author.get("display_name", ""),
                     "author_order": index,
+                    "openalex_author_id": author.get("id", ""),
                     "institution": _institution_for_author(authorship),
+                    "education_history": "",
+                    "advisor": "",
+                    "relations_conflicts": "",
+                    "email": "",
+                    "homepage": "",
+                    "linkedin": "",
+                    "github": "",
                 }
                 rows.append(row)
         else:
-            rows.append({**paper, "author_name": "", "author_order": "", "institution": ""})
+            rows.append(
+                {
+                    **paper,
+                    "author_name": "",
+                    "author_order": "",
+                    "openalex_author_id": "",
+                    "institution": "",
+                    "education_history": "",
+                    "advisor": "",
+                    "relations_conflicts": "",
+                    "email": "",
+                    "homepage": "",
+                    "linkedin": "",
+                    "github": "",
+                }
+            )
 
     return rows

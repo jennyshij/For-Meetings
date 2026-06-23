@@ -27,24 +27,22 @@ FEISHU_FIELDS_URL = (
 )
 REQUEST_TIMEOUT_SECONDS = 30
 BATCH_SIZE = 20
-DEFAULT_STATUS_FIELD = "状态"
-DEFAULT_STATUS_VALUE = "未联系"
 
 
 FIELD_MAPPING = {
     "paper_title": "paper_title",
-    "conference": "conference",
     "year": "year",
+    "paper_url": "paper_url",
     "research_direction": "research_direction",
     "author_name": "author_name",
-    "author_order": "author_order",
     "institution": "institution",
-    "matched_org": "matched_org",
-    "org_type": "org_type",
+    "education_history": "education_history",
+    "advisor": "advisor",
+    "relations_conflicts": "relations_conflicts",
     "email": "email",
-    "paper_url": "paper_url",
-    "matched_keywords": "matched_keywords",
-    "source": "source",
+    "homepage": "homepage",
+    "linkedin": "linkedin",
+    "github": "github",
 }
 
 
@@ -247,16 +245,15 @@ def read_csv_records(csv_path: str) -> list[dict[str, Any]]:
     return records
 
 
-def _coerce_bitable_value(csv_column: str, value: Any) -> str:
-    """Convert CSV values into Feishu-friendly text values.
-
-    The target Bitable currently exposes fields such as author_order as
-    Multiline/Text, so keep values as strings instead of inferring numbers.
-    """
+def _coerce_bitable_value(csv_column: str, value: Any) -> Any:
+    """Convert CSV values into Feishu-friendly field values."""
     if value is None:
         return ""
 
-    return str(value).strip()
+    text = str(value).strip()
+    if csv_column == "year":
+        return int(text) if text.isdigit() else ""
+    return text
 
 
 def build_feishu_record(
@@ -271,8 +268,6 @@ def build_feishu_record(
             continue
         fields[feishu_field] = _coerce_bitable_value(csv_column, row.get(csv_column, ""))
 
-    if allowed_field_names is None or DEFAULT_STATUS_FIELD in allowed_field_names:
-        fields[DEFAULT_STATUS_FIELD] = DEFAULT_STATUS_VALUE
     return {"fields": fields}
 
 
@@ -339,7 +334,7 @@ def sync_csv_to_feishu(csv_path: str, env_path: str = ".env") -> int:
             table_id=settings["table_id"],
         )
 
-        requested_field_names = set(FIELD_MAPPING.values()) | {DEFAULT_STATUS_FIELD}
+        requested_field_names = set(FIELD_MAPPING.values())
         missing_field_names = sorted(requested_field_names - field_names)
         if missing_field_names:
             print(

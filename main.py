@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 
 from config import CONFERENCES, KEYWORDS, OPENALEX_PER_QUERY, OUTPUT_CSV, YEARS
+from enrich_email import enrich_rows_with_homepage_emails
 from export_csv import export_papers_authors_csv
 from fetch_openalex import fetch_openalex_papers
+from fetch_openreview import enrich_rows_with_openreview
 from sync_feishu import sync_csv_to_feishu
 
 
@@ -46,6 +48,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Sync the exported CSV rows to Feishu Bitable after CSV export.",
     )
+    parser.add_argument(
+        "--enrich-email",
+        action="store_true",
+        help="Fetch author homepages and extract emails before CSV export.",
+    )
     return parser.parse_args()
 
 
@@ -67,6 +74,9 @@ def main() -> None:
         keywords=keywords,
         per_query=args.per_query,
     )
+    rows = enrich_rows_with_openreview(rows)
+    if args.enrich_email:
+        rows = enrich_rows_with_homepage_emails(rows)
 
     output_path = export_papers_authors_csv(rows, args.output)
     print(f"Exported {len(rows)} paper-author rows to {output_path}")

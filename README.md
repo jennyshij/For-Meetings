@@ -1,10 +1,12 @@
 # AI Recruiting Mapping Tool
 
-Phase 0/1 minimal pipeline for discovering AI/robotics recruiting candidates
-from public academic data sources, plus optional Phase 5 Feishu Bitable sync.
+Minimal pipeline for discovering AI/robotics recruiting candidates from public
+academic data sources, with optional homepage email enrichment and Phase 5
+Feishu Bitable sync.
 
 This version intentionally does not include a frontend or database. It fetches
-OpenAlex paper metadata, applies simple keyword-based classification, exports
+OpenAlex paper metadata, enriches author profiles from OpenReview when
+available, applies simple keyword-based classification, exports
 `papers_authors.csv`, and can sync the exported CSV into Feishu only when
 `--sync-feishu` is passed.
 
@@ -34,21 +36,25 @@ python main.py --conference CoRL --year 2024 --keyword "Robot Learning" --per-qu
 
 The output CSV contains:
 
-- conference
-- year
 - paper_title
+- year
 - paper_url
-- abstract
-- authors
-- author_name
-- author_order
-- institution
-- matched_org
-- org_type
-- email
-- matched_keywords
 - research_direction
-- source
+- author_name
+- institution
+- education_history
+- advisor
+- relations_conflicts
+- email
+- homepage
+- linkedin
+- github
+
+Optional email enrichment from author homepages:
+
+```bash
+python main.py --conference ICLR --year 2024 --keyword "Reinforcement Learning" --per-query 1 --enrich-email
+```
 
 ## Feishu sync
 
@@ -77,7 +83,34 @@ Sync behavior:
   `paper_url + author_name`.
 - Writes at most 20 records per batch and sleeps 0.5 seconds between batches.
 - Logs batch write failures and continues with later batches.
-- Writes the status field `状态` as `未联系` for every new record.
+- Writes only the 13 configured Bitable fields. Missing fields in the target
+  table are logged as warnings and skipped.
+
+## Module test commands
+
+OpenAlex fetch and CSV export:
+
+```bash
+python main.py --conference ICLR --year 2024 --keyword "Reinforcement Learning" --per-query 1 --output /tmp/papers_authors_openalex.csv
+```
+
+OpenReview profile extraction:
+
+```bash
+python fetch_openreview.py --author-id "~Chelsea_Finn1"
+```
+
+Homepage email extraction:
+
+```bash
+python enrich_email.py --input /tmp/papers_authors_openalex.csv --output /tmp/papers_authors_email.csv
+```
+
+Feishu sync with small data:
+
+```bash
+python main.py --conference ICLR --year 2024 --keyword "Reinforcement Learning" --per-query 1 --sync-feishu
+```
 
 ## Configuration
 
