@@ -5,3 +5,4 @@ __pycache__/
 .env.*
 !.env.example
 papers_authors.csv
+enriched_record_ids.txt
