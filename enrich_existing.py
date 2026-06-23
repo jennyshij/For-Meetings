@@ -372,7 +372,12 @@ def update_feishu_record(
         json={"fields": fields},
         timeout=30,
     )
-    response.raise_for_status()
+    if response.status_code >= 400:
+        print(
+            f"[ERROR] Feishu update HTTP {response.status_code} "
+            f"record_id={record_id}: {response.text[:1000]}"
+        )
+        response.raise_for_status()
     payload = response.json()
     if payload.get("code") != 0:
         print(f"[ERROR] Feishu update failed record_id={record_id}: {json.dumps(payload, ensure_ascii=False)}")
