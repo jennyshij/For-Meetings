@@ -6,3 +6,4 @@ __pycache__/
 !.env.example
 papers_authors.csv
 enriched_record_ids.txt
+enrich_existing.log
