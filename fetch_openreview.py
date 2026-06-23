@@ -110,6 +110,67 @@ def _profile_usernames(profile: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(usernames))
 
 
+def _add_profile_aliases(results: dict[str, dict[str, Any]], profile: dict[str, Any]) -> None:
+    """Map every known OpenReview username alias to the same profile object."""
+    for username in _profile_usernames(profile):
+        results[username] = profile
+
+
+def _fetch_single_profile_with_backoff(
+    session: requests.Session,
+    author_id: str,
+) -> dict[str, Any] | None:
+    """Fetch one profile with the required slower rate-limit policy."""
+    for attempt in range(1, OPENREVIEW_PROFILE_MAX_RETRIES + 1):
+        time.sleep(OPENREVIEW_PROFILE_REQUEST_PAUSE_SECONDS)
+        try:
+            response = session.get(
+                OPENREVIEW_PROFILES_URL,
+                params={"id": author_id},
+                timeout=15,
+            )
+        except requests.RequestException as exc:
+            print(f"[WARN] OpenReview single profile request failed for {author_id}: {exc}")
+            return None
+
+        if response.status_code == 429:
+            print(
+                "[WARN] OpenReview single profile rate limited; "
+                f"author_id={author_id}, attempt={attempt}/{OPENREVIEW_PROFILE_MAX_RETRIES}"
+            )
+            if attempt < OPENREVIEW_PROFILE_MAX_RETRIES:
+                time.sleep(OPENREVIEW_PROFILE_RATE_LIMIT_SLEEP_SECONDS)
+                continue
+
+        if response.status_code != 200:
+            print(
+                "[WARN] OpenReview single profile skipped; "
+                f"author_id={author_id}, status={response.status_code}, body={response.text[:200]}"
+            )
+            return None
+
+        profiles = response.json().get("profiles") or []
+        return profiles[0] if profiles else None
+
+    return None
+
+
+def _fetch_profiles_individually_for_batch(
+    session: requests.Session,
+    author_ids: list[str],
+    results: dict[str, dict[str, Any]],
+) -> None:
+    """Fallback for OpenReview deployments that do not support ids=... batches."""
+    print(
+        "[WARN] OpenReview ids= batch profile endpoint is unavailable; "
+        f"falling back to {len(author_ids)} slow single-profile requests"
+    )
+    for author_id in author_ids:
+        profile = _fetch_single_profile_with_backoff(session, author_id)
+        if profile:
+            _add_profile_aliases(results, profile)
+
+
 def fetch_openreview_profiles_batch(
     author_ids: list[str],
     batch_size: int = OPENREVIEW_PROFILE_BATCH_SIZE,
@@ -131,6 +192,7 @@ def fetch_openreview_profiles_batch(
             time.sleep(OPENREVIEW_PROFILE_REQUEST_PAUSE_SECONDS)
 
             response = None
+            fallback_used = False
             for attempt in range(1, OPENREVIEW_PROFILE_MAX_RETRIES + 1):
                 try:
                     response = active_session.get(
@@ -147,6 +209,11 @@ def fetch_openreview_profiles_batch(
                         if attempt < OPENREVIEW_PROFILE_MAX_RETRIES:
                             time.sleep(OPENREVIEW_PROFILE_RATE_LIMIT_SLEEP_SECONDS)
                             continue
+                    if response.status_code == 400:
+                        _fetch_profiles_individually_for_batch(active_session, batch, results)
+                        fallback_used = True
+                        response = None
+                        break
                     response.raise_for_status()
                     break
                 except requests.RequestException as exc:
@@ -154,14 +221,16 @@ def fetch_openreview_profiles_batch(
                     response = None
                     break
 
+            if fallback_used:
+                continue
+
             if response is None or response.status_code != 200:
                 print(f"[WARN] OpenReview profile batch skipped after retries for ids={ids_str}")
                 continue
 
             payload = response.json()
             for profile in payload.get("profiles") or []:
-                for username in _profile_usernames(profile):
-                    results[username] = profile
+                _add_profile_aliases(results, profile)
     finally:
         if owns_session:
             active_session.close()
